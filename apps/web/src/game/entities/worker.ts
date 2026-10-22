@@ -117,8 +117,10 @@ export class Worker {
     const armR = -swing - idleSway - this.carry * 1.2;
     m.armL.rotation.x = damp(m.armL.rotation.x, armL, 16, dt);
     m.armR.rotation.x = damp(m.armR.rotation.x, armR, 16, dt);
-    m.armL.rotation.z = damp(m.armL.rotation.z, 0.06 + walk * 0.05 - this.carry * 0.14, 12, dt);
-    m.armR.rotation.z = damp(m.armR.rotation.z, -0.06 - walk * 0.05 + this.carry * 0.14, 12, dt);
+    // arms hang splayed out past the hips like the reference, tucking in to hold a box
+    const splay = (0.26 + walk * 0.03) * (1 - this.carry) - this.carry * 0.08;
+    m.armL.rotation.z = damp(m.armL.rotation.z, -splay, 12, dt);
+    m.armR.rotation.z = damp(m.armR.rotation.z, splay, 12, dt);
 
     // blink every few seconds
     this.blinkIn -= dt;
