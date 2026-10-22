@@ -46,7 +46,7 @@ export class Game {
   private last = performance.now();
   private time = 0;
   private sendAcc = 0;
-  private lastSent = { x: NaN, z: NaN, rot: NaN };
+  private lastSent = { x: Infinity, z: Infinity, rot: Infinity };
   private highlight: string | null = null;
   private ro: ResizeObserver;
   private audio?: AudioContext;
@@ -88,7 +88,7 @@ export class Game {
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(container);
     this.resize();
-    if (import.meta.env.DEV) (window as unknown as { __shop: unknown }).__shop = () => ({ me: { ...this.me }, frames: this.frames, keys: this.input.axis() });
+    if (import.meta.env.DEV) (window as unknown as { __shop: unknown }).__shop = () => ({ server: this.session ? { ...this.session.view.players.get(this.session.localId) } : null, me: { ...this.me }, frames: this.frames, keys: this.input.axis() });
     this.raf = requestAnimationFrame(this.frame);
   }
 
