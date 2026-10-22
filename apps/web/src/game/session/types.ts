@@ -1,9 +1,12 @@
 import type { SimEvent, WorldView } from "@shop/shared";
+import type { MinigameChannel } from "../minigames/types";
 
 /** What the game needs from "the world": the offline sim and the Colyseus room both implement this. */
 export interface Session {
   readonly localId: string;
   readonly view: WorldView;
+  /** Minigame sessions are issued and validated by the authority behind this session. */
+  readonly minigames: MinigameChannel;
   onEvent?: (e: SimEvent) => void;
   onDisconnect?: (reason: string) => void;
   sendMove(x: number, z: number, rot: number): void;

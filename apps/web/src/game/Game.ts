@@ -15,6 +15,7 @@ import { hud } from "../app/store";
 import { Boxes } from "./entities/boxes";
 import { Worker } from "./entities/worker";
 import { Input } from "./input";
+import { createMinigameHook } from "./minigames/hook";
 import { World } from "./scene/world";
 import type { Session } from "./session/types";
 
@@ -57,8 +58,11 @@ export class Game {
   private frames = 0;
   private ring: THREE.Mesh;
   private holdingE = false;
+  private mgSeen = false;
   private toastId = 0;
   private toastTimer = 0;
+  /** Minigame entry point: gameplay code calls `game.minigames.launch(kind)` instead of starting hold-E. */
+  readonly minigames;
 
   constructor(private container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
@@ -93,6 +97,7 @@ export class Game {
     this.ring.visible = false;
     this.scene.add(this.ring);
 
+    this.minigames = createMinigameHook(container, () => this.session, () => this.input.clear());
     this.input.onPress = (code) => this.onKey(code);
     this.input.onRelease = (code) => this.onRelease(code);
     this.ro = new ResizeObserver(() => this.resize());
@@ -183,6 +188,7 @@ export class Game {
   }
 
   private onKey(code: string) {
+    if (this.minigames.onKey(code)) return;
     if (code === "Escape") return hud.set({ showHelp: !hud.get().showHelp });
     const s = this.session;
     if (!s || !hud.get().started) return;
@@ -191,7 +197,14 @@ export class Game {
     if (code === "KeyE") {
       const i = this.interaction();
       if (!i) return;
-      if (i.duration > 0) {
+      if (i.kind === "scan" || i.kind === "unpack") {
+        // close-up minigame: the server holds the task and finishes it when the minigame validates
+        s.hold(true);
+        this.mgSeen = false;
+        void this.minigames.launch(i.kind === "scan" ? "checkout" : "unpack").then((ok) => {
+          if (!ok) s.hold(false);
+        });
+      } else if (i.duration > 0) {
         this.holdingE = true;
         s.hold(true);
       } else if (i.kind === "pickup") s.pickup(i.targetId);
@@ -223,7 +236,8 @@ export class Game {
     this.time += dt;
     this.frames++;
     this.step(dt);
-    this.renderer.render(this.scene, this.camera);
+    if (this.minigames.active) this.minigames.update(dt);
+    else this.renderer.render(this.scene, this.camera);
   };
 
   private step(dt: number) {
@@ -231,6 +245,15 @@ export class Game {
     const started = hud.get().started;
     s?.update(dt);
     const view = s?.view;
+    if (this.minigames.active && s && view) {
+      // the minigame lives as long as the server-side task: closes if the worker is pushed away or the task ends
+      const act = view.players.get(s.localId)?.action ?? "";
+      if (act !== "") this.mgSeen = true;
+      else if (this.mgSeen) {
+        this.mgSeen = false;
+        this.minigames.cancel();
+      }
+    }
 
     if (s && view) {
       const mine = view.players.get(s.localId);
@@ -416,6 +439,7 @@ export class Game {
     cancelAnimationFrame(this.raf);
     clearTimeout(this.toastTimer);
     this.ro.disconnect();
+    this.minigames.dispose();
     this.input.dispose();
     this.session?.dispose();
     this.staff.forEach((w) => w.worker.dispose());

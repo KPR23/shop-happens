@@ -1,7 +1,16 @@
 import { Server } from "@colyseus/core";
 import { WebSocketTransport } from "@colyseus/ws-transport";
 import { Client, type Room } from "@colyseus/sdk";
-import { MAX_PLAYERS, MSG, ROOM_NAME } from "@shop/shared";
+import {
+  MAX_PLAYERS,
+  MINIGAME_CONFIG,
+  MSG,
+  ROOM_NAME,
+  generateItems,
+  type MinigameKind,
+  type MinigameResult,
+  type MinigameStartResult,
+} from "@shop/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ShopRoom } from "../src/rooms/ShopRoom";
 
@@ -23,6 +32,20 @@ async function waitFor(cond: () => boolean, ms = 3000) {
     if (Date.now() - t0 > ms) throw new Error("timeout waiting for condition");
     await sleep(25);
   }
+}
+
+/** Plays the minigame for the running hold task like an honest client: start, wait the minimum time, report. */
+async function playMinigame(room: Room, kind: MinigameKind) {
+  const started = new Promise<MinigameStartResult>((res) => room.onMessage(MSG.mgSession, (m: MinigameStartResult) => res(m)));
+  room.send(MSG.mgStart, { kind });
+  const r = await started;
+  if (!r.ok) throw new Error(r.reason);
+  const { session } = r;
+  const cfg = MINIGAME_CONFIG[kind];
+  await sleep(cfg.minBaseMs + session.count * cfg.minMsPerItem + 150);
+  const result = new Promise<MinigameResult>((res) => room.onMessage(MSG.mgResult, (m: MinigameResult) => res(m)));
+  room.send(MSG.mgComplete, { sessionId: session.id, kind, items: generateItems(session.seed, session.count), actions: cfg.actionsBase + session.count * cfg.actionsPerItem, clientDurationMs: 1 });
+  return result;
 }
 
 /** Walks in small steps, like the real client does at ~20Hz. */
@@ -93,6 +116,11 @@ describe("multiplayer room", () => {
     expect(c.state.fixtures.get("rackA").stock).toBe(24);
     await sleep(150);
     winner.send(MSG.hold, { on: true });
+    await waitFor(() => c.state.players.get(winner.sessionId).action === "unpack");
+    // unpacking is a close-up minigame: the hold never finishes by itself, only a validated report completes it
+    await sleep(600);
+    expect(c.state.fixtures.get("rackA").stock).toBe(24);
+    expect(await playMinigame(winner, "unpack")).toMatchObject({ ok: true });
     await waitFor(() => c.state.fixtures.get("rackA").stock === 36, 6000);
     expect(c.state.players.get(winner.sessionId).heldBoxId).toBe("");
 

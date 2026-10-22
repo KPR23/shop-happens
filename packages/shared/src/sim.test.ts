@@ -3,6 +3,7 @@ import { CASHIER_ZONE, MAX_PLAYERS, QUEUE_SLOTS } from "./constants";
 import { ECON, HOLD, TIMING } from "./content";
 import { isWalkable, resolveMove } from "./geometry";
 import { resolveInteraction } from "./interaction";
+import { MINIGAME_CONFIG, generateItems, type MinigameKind } from "./minigames";
 import { GameSim } from "./sim";
 import type { SimEvent } from "./types";
 
@@ -30,6 +31,15 @@ function carryCrateToRack(sim: GameSim, id = "a") {
   expect(sim.pickup(id, crate.id)).toBe(true);
   place(sim, id, 9.5, -6.0);
   return crate;
+}
+/** Plays the minigame for the player's running hold task like an honest client would. */
+function playMinigame(sim: GameSim, id: string, kind: MinigameKind, at = 0) {
+  const r = sim.startMinigame(id, kind, at);
+  if (!r.ok) return r;
+  const { session } = r;
+  const cfg = MINIGAME_CONFIG[kind];
+  const report = { sessionId: session.id, kind, items: generateItems(session.seed, session.count), actions: cfg.actionsBase + session.count * cfg.actionsPerItem, clientDurationMs: 0 };
+  return sim.completeMinigame(id, report, at + cfg.minBaseMs + session.count * cfg.minMsPerItem);
 }
 function stockShelf(sim: GameSim, shelf: string, units = 12) {
   sim.fixtures.get(shelf)!.stock = units;
@@ -161,18 +171,33 @@ describe("player collision", () => {
 });
 
 describe("hold-to-act tasks", () => {
-  it("unpacks a crate into the rack only after the full hold", () => {
+  it("unpacks a crate into the rack only when the unpack minigame validates, never on a timer", () => {
     const { sim } = setup();
     carryCrateToRack(sim);
     const before = sim.fixtures.get("rackA")!.stock;
+    expect(sim.startMinigame("a", "unpack", 0)).toMatchObject({ ok: false, reason: "no_station" });
     const i = sim.startHold("a")!;
     expect(i.kind).toBe("unpack");
-    run(sim, HOLD.unpack - 0.5);
+    run(sim, HOLD.unpack + 5);
     expect(sim.fixtures.get("rackA")!.stock).toBe(before);
-    expect(sim.players.get("a")!.actionProgress).toBeGreaterThan(0.5);
-    run(sim, 0.7);
+    expect(sim.players.get("a")!.action).toBe("unpack");
+    expect(playMinigame(sim, "a", "unpack")).toMatchObject({ ok: true });
     expect(sim.fixtures.get("rackA")!.stock).toBe(before + ECON.crateUnits);
     expect(sim.players.get("a")!.heldBoxId).toBe("");
+    expect(sim.players.get("a")!.action).toBe("");
+  });
+
+  it("cancelling the minigame ends the task without a reward or stock change", () => {
+    const { sim } = setup();
+    carryCrateToRack(sim);
+    const before = sim.fixtures.get("rackA")!.stock;
+    sim.startHold("a");
+    expect(sim.startMinigame("a", "unpack", 0)).toMatchObject({ ok: true });
+    sim.cancelMinigame("a");
+    expect(sim.players.get("a")!.action).toBe("");
+    expect(sim.fixtures.get("rackA")!.stock).toBe(before);
+    expect(sim.minigameScore.get("a")).toBeUndefined();
+    expect(sim.startMinigame("a", "checkout", 5000)).toMatchObject({ ok: false, reason: "no_station" });
   });
 
   it("cancels when released or when the worker walks away", () => {
@@ -293,9 +318,14 @@ describe("day cycle and customers", () => {
     stockShelf(sim, "shelfD", 18);
     openStore(sim);
     place(sim, "a", (CASHIER_ZONE.minX + CASHIER_ZONE.maxX) / 2, 7.1);
+    let at = 0;
     for (let t = 0; t < 80; t += 0.05) {
       sim.tick(0.05);
-      sim.startHold("a"); // the cashier keeps working whenever a customer is ready
+      // the cashier keeps working whenever a customer is ready: scanning is the checkout minigame
+      if (sim.startHold("a")) {
+        at += 10_000;
+        playMinigame(sim, "a", "checkout", at);
+      }
     }
     const saleEvents = events.filter((e) => e.type === "sale");
     expect(saleEvents.length).toBeGreaterThan(2);
@@ -304,7 +334,8 @@ describe("day cycle and customers", () => {
     expect(sim.stats.earned % ECON.price).toBe(0);
     // shelf stock went down by exactly the units sold
     const left = [...sim.fixtures.values()].filter((f) => f.id.startsWith("shelf")).reduce((s, f) => s + f.stock, 0);
-    const inBaskets = [...sim.customers.values()].reduce((s, c) => s + c.items, 0);
+    // paid customers ("leaving") are already counted in the sales
+    const inBaskets = [...sim.customers.values()].filter((c) => c.state !== "leaving").reduce((s, c) => s + c.items, 0);
     expect(72 - left - inBaskets).toBe(sim.stats.earned / ECON.price);
   });
 

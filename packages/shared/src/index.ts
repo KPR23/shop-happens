@@ -5,3 +5,4 @@ export * from "./messages";
 export * from "./geometry";
 export * from "./interaction";
 export * from "./sim";
+export * from "./minigames";

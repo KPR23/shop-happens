@@ -9,6 +9,12 @@ export const MSG = {
   /** Start/stop a hold-to-act task. The server decides which task applies. */
   hold: "hold",
   upgrade: "upgrade",
+  /** Minigames (see minigames.ts): the server issues a session and validates the final report. */
+  mgStart: "mg:start",
+  mgSession: "mg:session",
+  mgComplete: "mg:complete",
+  mgCancel: "mg:cancel",
+  mgResult: "mg:result",
   /** Server -> client broadcast of SimEvent. */
   event: "event",
 } as const;

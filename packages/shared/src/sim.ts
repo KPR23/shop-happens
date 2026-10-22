@@ -46,9 +46,22 @@ interface Hold {
   targetId: string;
   elapsed: number;
   duration: number;
+  /** Close-up minigame task: finishes when the server validates the minigame, not on a timer. */
+  minigame?: MinigameKind;
 }
 
+/** Hold-E tasks that run as a close-up minigame instead of a timer. */
+const MINIGAME_FOR_TASK: Partial<Record<string, MinigameKind>> = { scan: "checkout", unpack: "unpack" };
+const MINIGAME_HOLD_TIMEOUT_S = 330;
+
 const CLOSE_MINUTES = { prep: 420, open: 540, closing: 1080, end: 1140 };
+import {
+  MinigameValidator,
+  type MinigameKind,
+  type MinigameReport,
+  type MinigameResult,
+  type MinigameStartResult,
+} from "./minigames";
 
 /**
  * Authoritative game rules. Pure TypeScript with no I/O or rendering, so the Colyseus room and the
@@ -72,10 +85,13 @@ export class GameSim implements WorldView {
   upgrades: Upgrades = { hands: 0, deal: 0, traffic: 0 };
   stats: DayStats = { earned: 0, served: 0, lost: 0 };
   onEvent?: (e: SimEvent) => void;
+  /** Minigame rewards earned per player id (authoritative; only the validator can add to it). */
+  minigameScore = new Map<string, number>();
 
   private rng: () => number;
   private time = 0;
   private nextId = 1;
+  private minigames = new MinigameValidator();
   private lastMoveAt = new Map<string, number>();
   private holds = new Map<string, Hold>();
   private flights = new Map<string, number>();
@@ -114,6 +130,39 @@ export class GameSim implements WorldView {
     if (p.heldBoxId) this.releaseToFloor(p);
     this.players.delete(id);
     this.lastMoveAt.delete(id);
+    this.minigames.remove(id);
+    this.minigameScore.delete(id);
+  }
+
+  startMinigame(id: string, kind: MinigameKind, now: number): MinigameStartResult {
+    if (!this.players.has(id)) return { ok: false, reason: "no_player" };
+    // a minigame only opens from a matching hold-E task, i.e. while standing at its station
+    if (this.holds.get(id)?.minigame !== kind) return { ok: false, reason: "no_station" };
+    return this.minigames.start(id, kind, now);
+  }
+
+  cancelMinigame(id: string): void {
+    this.minigames.cancel(id);
+    if (this.holds.get(id)?.minigame) this.stopHold(id);
+  }
+
+  /** Validates the report; the reward is granted here and nowhere else. */
+  completeMinigame(id: string, report: MinigameReport, now: number): MinigameResult {
+    if (!this.players.has(id)) return { ok: false, sessionId: report?.sessionId ?? "", kind: null, reason: "no_player", reward: 0 };
+    const r = this.minigames.complete(id, report, now);
+    if (r.ok) {
+      this.minigameScore.set(id, (this.minigameScore.get(id) ?? 0) + r.reward);
+      const h = this.holds.get(id);
+      const p = this.players.get(id);
+      if (h && p && h.minigame === r.kind) {
+        this.holds.delete(id);
+        p.action = "";
+        p.actionProgress = 0;
+        this.completeTask(p, h);
+      }
+      this.onEvent?.({ type: "minigame", by: id, kind: r.kind, reward: r.reward });
+    }
+    return r;
   }
 
   /** Client-reported movement; rejected when out of bounds, inside solids, too fast, or while away. */
@@ -235,7 +284,8 @@ export class GameSim implements WorldView {
     if (!p || p.away || this.holds.has(id)) return null;
     const i = resolveInteraction(this, p);
     if (!i || i.duration <= 0 || i.kind === "put" || i.kind === "pickup" || i.kind === "info") return null;
-    this.holds.set(id, { kind: i.kind as ActionKind, targetId: i.targetId, elapsed: 0, duration: i.duration });
+    const minigame = MINIGAME_FOR_TASK[i.kind];
+    this.holds.set(id, { kind: i.kind as ActionKind, targetId: i.targetId, elapsed: 0, duration: i.duration, minigame });
     p.action = i.kind as ActionKind;
     p.actionProgress = 0;
     return i;
@@ -335,7 +385,11 @@ export class GameSim implements WorldView {
         const c = this.customers.get(h.targetId);
         if (c) c.scanned = true;
       }
-      if (h.elapsed >= h.duration) {
+      if (h.minigame && h.elapsed > MINIGAME_HOLD_TIMEOUT_S) {
+        this.stopHold(pid);
+        continue;
+      }
+      if (!h.minigame && h.elapsed >= h.duration) {
         this.holds.delete(pid);
         p.action = "";
         p.actionProgress = 0;

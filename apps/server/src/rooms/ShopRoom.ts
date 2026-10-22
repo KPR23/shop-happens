@@ -8,6 +8,8 @@ import {
   MSG,
   SERVER_TICK_HZ,
   type HoldMessage,
+  parseMinigameReport,
+  parseMinigameStart,
   type MoveMessage,
   type PickupMessage,
   type UpgradeMessage,
@@ -59,6 +61,22 @@ export class ShopRoom extends Room<{ state: ShopState }> {
       if (!msg || typeof msg.id !== "string" || msg.id.length > 16) return;
       this.sim.buyUpgrade(client.sessionId, msg.id);
     });
+
+    // Minigames: the server issues the session and is the only one to grant the reward.
+    this.onMessage(MSG.mgStart, (client, msg: unknown) => {
+      if (!this.allow(client, "action", MIN_ACTION_INTERVAL_MS)) return;
+      const m = parseMinigameStart(msg);
+      client.send(MSG.mgSession, m ? this.sim.startMinigame(client.sessionId, m.kind, Date.now()) : { ok: false, reason: "bad_request" });
+    });
+    this.onMessage(MSG.mgComplete, (client, msg: unknown) => {
+      if (!this.allow(client, "action", MIN_ACTION_INTERVAL_MS)) return;
+      const report = parseMinigameReport(msg);
+      client.send(
+        MSG.mgResult,
+        report ? this.sim.completeMinigame(client.sessionId, report, Date.now()) : { ok: false, sessionId: "", kind: null, reason: "bad_request", reward: 0 },
+      );
+    });
+    this.onMessage(MSG.mgCancel, (client) => this.sim.cancelMinigame(client.sessionId));
 
     this.setSimulationInterval((dtMs) => {
       this.sim.tick(Math.min(dtMs, 250) / 1000);
