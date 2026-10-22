@@ -180,9 +180,9 @@ export class World {
       const posts = Math.max(2, Math.round(len / 1.9) + 1);
       for (let i = 0; i < posts; i++) {
         const px = -len / 2 + (len * i) / (posts - 1);
-        for (const pz of [-dep / 2 + 0.05, dep / 2 - 0.05]) this.box(0.1, 2.5, 0.1, STEEL_BLUE, px, 1.25, pz, { parent: g });
+        for (const pz of [-dep / 2 + 0.04, dep / 2 - 0.04]) this.box(0.1, 2.52, 0.12, STEEL_BLUE, px, 1.25, pz, { parent: g });
       }
-      for (const y of levels) this.box(len, 0.08, dep, ORANGE, 0, y, 0, { parent: g });
+      for (const [i, y] of levels.entries()) this.box(len - 0.14, 0.08, dep - 0.1, ORANGE, 0, y + i * 0.002, 0, { parent: g });
       // products: rows on each level, boxes up top
       for (let li = 0; li < 3; li++) {
         for (const side of productSides) {
@@ -196,7 +196,7 @@ export class World {
             const lz = productSides.length === 2 ? side * (dep / 4) : side * 0;
             const gx = x;
             // convert local -> world
-            const lp = new THREE.Vector3(gx, levels[li] + 0.04 + h / 2, lz);
+            const lp = new THREE.Vector3(gx, levels[li] + 0.045 + h / 2, lz);
             lp.applyMatrix4(g.matrixWorld.identity().compose(g.position, g.quaternion, g.scale));
             if (rnd() < 0.88) addProd(lp.x, lp.y, lp.z, alongX ? w : wz, h, alongX ? wz : w, color);
             x += w + 0.08;

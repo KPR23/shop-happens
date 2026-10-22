@@ -98,8 +98,8 @@ export class Worker {
     part(boxGeo, hat, [0, 1.65, 0.3], [0.2, 0.17, 0.12], b);
 
     // name tag, plus a ring and bobbing arrow for the locally controlled worker
-    const tag = textSprite(isLocal ? `${name} (you)` : name, { bg: isLocal ? "rgba(255,200,0,0.95)" : "rgba(30,40,70,0.82)", fg: isLocal ? "#2a1a00" : "#fff" });
-    tag.sprite.position.set(0, 2.45, 0);
+    const tag = textSprite(isLocal ? `${name} ★` : name, { bg: isLocal ? "rgba(255,200,0,0.95)" : "rgba(30,40,70,0.82)", fg: isLocal ? "#2a1a00" : "#fff", size: 34, scale: 0.0062 });
+    tag.sprite.position.set(0, 2.3, 0);
     this.res.add({ dispose: tag.dispose });
     this.group.add(tag.sprite);
     if (isLocal) {

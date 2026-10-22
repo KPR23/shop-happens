@@ -34,7 +34,7 @@ const angleLerp = (a: number, b: number, k: number) => a + Math.atan2(Math.sin(b
 export class Game {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
-  private camera = new THREE.PerspectiveCamera(32, 1, 0.5, 120);
+  private camera = new THREE.PerspectiveCamera(32, 1, 6, 90);
   private world = new World();
   private boxes = new Boxes();
   private input = new Input();
@@ -79,7 +79,7 @@ export class Game {
     this.scene.add(this.world.group, this.boxes.root);
 
     const ringGeo = new THREE.RingGeometry(0.5, 0.62, 28);
-    this.ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, side: THREE.DoubleSide }));
+    this.ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }));
     this.ring.rotation.x = -Math.PI / 2;
     this.ring.visible = false;
     this.scene.add(this.ring);
@@ -300,7 +300,7 @@ export class Game {
     hud.set({ hint });
     const hb = this.highlight && s.view.boxes.get(this.highlight);
     this.ring.visible = !!hb;
-    if (hb) this.ring.position.set(hb.x, 0.05, hb.z);
+    if (hb) this.ring.position.set(hb.x, 0.12, hb.z);
   }
 
   private updateCamera(dt: number) {
