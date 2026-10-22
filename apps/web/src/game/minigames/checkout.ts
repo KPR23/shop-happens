@@ -80,6 +80,9 @@ export class CheckoutGame implements Minigame {
     // first-person eye height, looking down at the counter
     camera.position.set(0, 1.6, 2.4);
     camera.lookAt(0, TOP, -0.2);
+    // belt (left) through the last bag slot (right) must stay in frame at any aspect ratio
+    ctx.stage.fit = { halfWidth: 3.2, distance: camera.position.distanceTo(new THREE.Vector3(0, TOP, -0.2)) };
+    ctx.stage.resize();
 
     ctx.items.forEach((type, i) => {
       const obj = makeProduct(type);
@@ -126,7 +129,7 @@ export class CheckoutGame implements Minigame {
     const p = this.ctx.stage.planePoint(TOP + 0.1, this.tmp);
     if (!p) return;
     const o = d.item.obj;
-    o.position.set(THREE.MathUtils.clamp(p.x + d.offX, -2.9, 2.9), TOP + 0.12, THREE.MathUtils.clamp(p.z + d.offZ, -0.9, 0.9));
+    o.position.set(THREE.MathUtils.clamp(p.x + d.offX, -2.7, 2.7), TOP + 0.12, THREE.MathUtils.clamp(p.z + d.offZ, -0.9, 0.9));
     if (!d.item.scanned && this.inScanner(o.position)) this.scan(d.item);
   }
 
@@ -171,7 +174,7 @@ export class CheckoutGame implements Minigame {
   private toBag(item: Item) {
     if (item.slot < 0) item.slot = this.nextSlot++;
     const k = item.slot;
-    const slot = new THREE.Vector3(BAG_X + (k % 4) * 0.42 + 0.1, TOP, -0.3 + Math.floor(k / 4) * 0.55);
+    const slot = new THREE.Vector3(BAG_X + (k % 4) * 0.36 + 0.1, TOP, -0.3 + Math.floor(k / 4) * 0.55);
     this.run({ item, pts: [item.obj.position.clone().setY(TOP + 0.3), slot.clone().setY(TOP + 0.3), slot], seg: 0, onDone: () => this.markBagged(item) });
   }
 

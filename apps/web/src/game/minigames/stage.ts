@@ -91,12 +91,20 @@ export class MinigameStage {
     return out.copy(origin).addScaledVector(direction, t);
   }
 
+  /** Optional framing guarantee; set by a minigame, then call resize(). */
+  fit?: { halfWidth: number; distance: number };
+
   resize() {
     const w = Math.max(1, this.host.clientWidth);
     const h = Math.max(1, this.host.clientHeight);
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.fov = this.camera.aspect < 1.4 ? 55 * Math.min(1.6, 1.4 / this.camera.aspect) : 55;
+    if (this.fit) {
+      // widen the vertical fov so a horizontal half-extent of `halfWidth` at `distance` always fits
+      const need = 2 * Math.atan(Math.tan(Math.atan(this.fit.halfWidth / this.fit.distance)) / this.camera.aspect);
+      this.camera.fov = Math.max(this.camera.fov, THREE.MathUtils.radToDeg(need));
+    }
     this.camera.updateProjectionMatrix();
   }
 
