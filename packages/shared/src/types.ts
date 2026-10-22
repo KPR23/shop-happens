@@ -76,7 +76,8 @@ export type SimEvent =
   | { type: "sale"; amount: number; x: number; z: number }
   | { type: "lost"; x: number; z: number }
   | { type: "phase"; phase: DayPhase; day: number }
-  | { type: "toast"; text: string };
+  | { type: "toast"; text: string }
+  | { type: "minigame"; by: string; kind: "checkout" | "unpack"; reward: number };
 
 /** Read-only view the renderer/HUD consumes (implemented by the local sim and the network adapter). */
 export interface WorldView {

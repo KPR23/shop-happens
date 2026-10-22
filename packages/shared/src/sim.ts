@@ -49,6 +49,13 @@ interface Hold {
 }
 
 const CLOSE_MINUTES = { prep: 420, open: 540, closing: 1080, end: 1140 };
+import {
+  MinigameValidator,
+  type MinigameKind,
+  type MinigameReport,
+  type MinigameResult,
+  type MinigameStartResult,
+} from "./minigames";
 
 /**
  * Authoritative game rules. Pure TypeScript with no I/O or rendering, so the Colyseus room and the
@@ -72,10 +79,13 @@ export class GameSim implements WorldView {
   upgrades: Upgrades = { hands: 0, deal: 0, traffic: 0 };
   stats: DayStats = { earned: 0, served: 0, lost: 0 };
   onEvent?: (e: SimEvent) => void;
+  /** Minigame rewards earned per player id (authoritative; only the validator can add to it). */
+  minigameScore = new Map<string, number>();
 
   private rng: () => number;
   private time = 0;
   private nextId = 1;
+  private minigames = new MinigameValidator();
   private lastMoveAt = new Map<string, number>();
   private holds = new Map<string, Hold>();
   private flights = new Map<string, number>();
@@ -114,6 +124,28 @@ export class GameSim implements WorldView {
     if (p.heldBoxId) this.releaseToFloor(p);
     this.players.delete(id);
     this.lastMoveAt.delete(id);
+    this.minigames.remove(id);
+    this.minigameScore.delete(id);
+  }
+
+  startMinigame(id: string, kind: MinigameKind, now: number): MinigameStartResult {
+    if (!this.players.has(id)) return { ok: false, reason: "no_player" };
+    return this.minigames.start(id, kind, now);
+  }
+
+  cancelMinigame(id: string): void {
+    this.minigames.cancel(id);
+  }
+
+  /** Validates the report; the reward is granted here and nowhere else. */
+  completeMinigame(id: string, report: MinigameReport, now: number): MinigameResult {
+    if (!this.players.has(id)) return { ok: false, sessionId: report?.sessionId ?? "", kind: null, reason: "no_player", reward: 0 };
+    const r = this.minigames.complete(id, report, now);
+    if (r.ok) {
+      this.minigameScore.set(id, (this.minigameScore.get(id) ?? 0) + r.reward);
+      this.onEvent?.({ type: "minigame", by: id, kind: r.kind, reward: r.reward });
+    }
+    return r;
   }
 
   /** Client-reported movement; rejected when out of bounds, inside solids, too fast, or while away. */

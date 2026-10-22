@@ -1,10 +1,12 @@
 import { GameSim, type SimEvent } from "@shop/shared";
+import { LocalMinigameChannel } from "../minigames/channels";
 import type { Session } from "./types";
 
 /** Offline single-player: runs the same rules as the server, in-browser. */
 export class LocalSession implements Session {
   readonly localId = "local";
   readonly sim = new GameSim();
+  readonly minigames = new LocalMinigameChannel(this.sim, this.localId);
   onEvent?: (e: SimEvent) => void;
   onDisconnect?: (reason: string) => void;
 

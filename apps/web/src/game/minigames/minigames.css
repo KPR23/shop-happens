@@ -1,0 +1,16 @@
+.mg-overlay { position: absolute; inset: 0; z-index: 40; background: #000; font-family: inherit; color: #1f2a44; touch-action: none; }
+.mg-view { position: absolute; inset: 0; }
+.mg-canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.mg-top { position: absolute; top: 14px; left: 14px; right: 14px; display: flex; gap: 12px; align-items: center; pointer-events: none; }
+.mg-title, .mg-counter, .mg-esc { background: #ffc800; border-radius: 12px; padding: 6px 14px; font-weight: 900; box-shadow: 0 3px 0 rgba(0, 0, 0, 0.25); }
+.mg-counter { background: #fff7e0; }
+.mg-esc { margin-left: auto; background: #1f2a44; color: #fff; font-size: 13px; }
+.mg-hint { position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%); max-width: calc(100% - 32px); text-align: center; background: rgba(31, 42, 68, 0.88); color: #fff; padding: 9px 18px; border-radius: 14px; font-weight: 700; pointer-events: none; }
+.mg-flash { position: absolute; left: 50%; top: 18%; transform: translate(-50%, 0); padding: 8px 20px; border-radius: 14px; font-weight: 900; font-size: 22px; opacity: 0; pointer-events: none; transition: opacity 0.15s; color: #fff; }
+.mg-flash.show { opacity: 1; }
+.mg-flash.ok { background: #2fb36d; }
+.mg-flash.bad { background: #d64545; }
+.mg-result { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: grid; gap: 6px; text-align: center; padding: 22px 34px; border-radius: 20px; font-size: 24px; cursor: pointer; box-shadow: 0 8px 0 rgba(0, 0, 0, 0.25); max-width: calc(100% - 32px); }
+.mg-result span { font-size: 14px; opacity: 0.8; }
+.mg-result.ok { background: #3ddc84; }
+.mg-result.bad { background: #ffb4a8; }

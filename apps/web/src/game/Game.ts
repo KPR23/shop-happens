@@ -15,6 +15,7 @@ import { hud } from "../app/store";
 import { Boxes } from "./entities/boxes";
 import { Worker } from "./entities/worker";
 import { Input } from "./input";
+import { createMinigameHook } from "./minigames/hook";
 import { World } from "./scene/world";
 import type { Session } from "./session/types";
 
@@ -59,6 +60,8 @@ export class Game {
   private holdingE = false;
   private toastId = 0;
   private toastTimer = 0;
+  /** Minigame entry point: gameplay code calls `game.minigames.launch(kind)` instead of starting hold-E. */
+  readonly minigames;
 
   constructor(private container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
@@ -93,6 +96,7 @@ export class Game {
     this.ring.visible = false;
     this.scene.add(this.ring);
 
+    this.minigames = createMinigameHook(container, () => this.session, () => this.input.clear());
     this.input.onPress = (code) => this.onKey(code);
     this.input.onRelease = (code) => this.onRelease(code);
     this.ro = new ResizeObserver(() => this.resize());
@@ -183,6 +187,7 @@ export class Game {
   }
 
   private onKey(code: string) {
+    if (this.minigames.onKey(code)) return;
     if (code === "Escape") return hud.set({ showHelp: !hud.get().showHelp });
     const s = this.session;
     if (!s || !hud.get().started) return;
@@ -223,7 +228,8 @@ export class Game {
     this.time += dt;
     this.frames++;
     this.step(dt);
-    this.renderer.render(this.scene, this.camera);
+    if (this.minigames.active) this.minigames.update(dt);
+    else this.renderer.render(this.scene, this.camera);
   };
 
   private step(dt: number) {
@@ -416,6 +422,7 @@ export class Game {
     cancelAnimationFrame(this.raf);
     clearTimeout(this.toastTimer);
     this.ro.disconnect();
+    this.minigames.dispose();
     this.input.dispose();
     this.session?.dispose();
     this.staff.forEach((w) => w.worker.dispose());

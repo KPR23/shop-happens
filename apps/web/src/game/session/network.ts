@@ -17,6 +17,7 @@ import {
   type VanData,
   type WorldView,
 } from "@shop/shared";
+import { NetworkMinigameChannel } from "../minigames/channels";
 import type { Session } from "./types";
 
 class NetView implements WorldView {
@@ -37,10 +38,12 @@ class NetView implements WorldView {
 /** Colyseus-backed session. The room state is mirrored into plain maps on every patch. */
 export class NetworkSession implements Session {
   readonly view = new NetView();
+  readonly minigames: NetworkMinigameChannel;
   onEvent?: (e: SimEvent) => void;
   onDisconnect?: (reason: string) => void;
 
   private constructor(private room: Room) {
+    this.minigames = new NetworkMinigameChannel(room);
     room.onStateChange((state: any) => this.mirror(state));
     room.onMessage(MSG.event, (e: SimEvent) => this.onEvent?.(e));
     room.onLeave((code: number) => this.onDisconnect?.(`Disconnected (code ${code})`));
