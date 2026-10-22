@@ -27,6 +27,8 @@ interface Remote {
   name: string;
 }
 
+const ZOOM_MIN = 0.24;
+const ZOOM_MAX = 1.3;
 const HINT_RANGE = PICKUP_RANGE - 0.3;
 const angleLerp = (a: number, b: number, k: number) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * k;
 
@@ -34,7 +36,7 @@ const angleLerp = (a: number, b: number, k: number) => a + Math.atan2(Math.sin(b
 export class Game {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
-  private camera = new THREE.PerspectiveCamera(32, 1, 6, 90);
+  private camera = new THREE.PerspectiveCamera(32, 1, 0.5, 90);
   private world = new World();
   private boxes = new Boxes();
   private input = new Input();
@@ -53,6 +55,9 @@ export class Game {
   private disposed = false;
   private frames = 0;
   private ring: THREE.Mesh;
+  // camera distance multiplier (1 = default framing); the wheel moves the target, the camera eases toward it
+  private zoomTarget = 1;
+  private zoom = 1;
 
   constructor(private container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
@@ -84,6 +89,7 @@ export class Game {
     this.ring.visible = false;
     this.scene.add(this.ring);
 
+    this.renderer.domElement.addEventListener("wheel", this.onWheel, { passive: false });
     this.input.onPress = (code) => this.onKey(code);
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(container);
@@ -162,6 +168,12 @@ export class Game {
     }
     return best;
   }
+
+  private onWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 100 : e.deltaY;
+    this.zoomTarget = THREE.MathUtils.clamp(this.zoomTarget * Math.exp(px * 0.0012), ZOOM_MIN, ZOOM_MAX);
+  };
 
   private resize() {
     const w = Math.max(1, this.container.clientWidth);
@@ -309,14 +321,22 @@ export class Game {
     const k = 1 - Math.exp(-dt * 4);
     this.camTarget.x += (tx - this.camTarget.x) * k;
     this.camTarget.z += (tz - this.camTarget.z) * k;
-    this.camera.position.set(this.camTarget.x * 0.9, 19, this.camTarget.z + 17);
-    this.camera.lookAt(this.camTarget.x * 0.9, 0.3, this.camTarget.z - 0.5);
+    this.zoom += (this.zoomTarget - this.zoom) * (1 - Math.exp(-dt * 10));
+    // zoomed in, follow the player tightly and aim at the chest instead of the floor
+    const close = 1 - THREE.MathUtils.smoothstep(this.zoom, ZOOM_MIN, 0.7);
+    const fx = THREE.MathUtils.lerp(0.9, 1, close);
+    const cx = THREE.MathUtils.lerp(this.camTarget.x, this.me.x, close);
+    const cz = THREE.MathUtils.lerp(this.camTarget.z, this.me.z, close);
+    const aimY = THREE.MathUtils.lerp(0.3, 1.0, close);
+    this.camera.position.set(cx * fx, 0.4 + 18.8 * this.zoom * (1 - 0.45 * close), cz + 17 * this.zoom);
+    this.camera.lookAt(cx * fx, aimY, cz - 0.5 * this.zoom);
   }
 
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
     this.ro.disconnect();
+    this.renderer.domElement.removeEventListener("wheel", this.onWheel);
     this.input.dispose();
     this.session?.dispose();
     this.workers.forEach((w) => w.worker.dispose());
