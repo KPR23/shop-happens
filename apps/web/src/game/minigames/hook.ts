@@ -3,14 +3,14 @@ import { hud } from "../../app/store";
 import type { Session } from "../session/types";
 import { MinigameManager } from "./index";
 
-/** Dev/test triggers until the hold-E interactions call `launch()` themselves. */
-const DEBUG_KEYS: Record<string, MinigameKind> = { Digit1: "checkout", Digit2: "unpack" };
 
 export interface MinigameHook {
   /** The single entry point for gameplay code: replaces a hold-E action with `hook.launch("unpack")`. */
   launch(kind: MinigameKind): Promise<boolean>;
-  /** Feed key presses; returns true when consumed. */
+  /** Feed key presses; returns true when consumed (always while a minigame is open). */
   onKey(code: string): boolean;
+  /** Close the open minigame without a reward (e.g. the server ended the task). */
+  cancel(): void;
   update(dt: number): void;
   readonly active: boolean;
   dispose(): void;
@@ -24,15 +24,8 @@ export function createMinigameHook(container: HTMLElement, getSession: () => Ses
   });
   return {
     launch: (kind) => (hud.get().started ? manager.start(kind) : Promise.resolve(false)),
-    onKey(code) {
-      if (manager.active) return true;
-      const kind = DEBUG_KEYS[code];
-      if (kind && hud.get().started && getSession()) {
-        void manager.start(kind);
-        return true;
-      }
-      return false;
-    },
+    onKey: () => manager.active,
+    cancel: () => manager.abort(),
     update: (dt) => manager.update(dt),
     get active() {
       return manager.active;

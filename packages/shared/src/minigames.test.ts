@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CASHIER_ZONE } from "./constants";
 import { GameSim } from "./sim";
 import {
   MINIGAME_CONFIG,
@@ -150,7 +151,14 @@ describe("GameSim minigame integration", () => {
     sim.addPlayer("p1", "Ann");
     const events: string[] = [];
     sim.onEvent = (e) => events.push(e.type);
+    // stand at the register with a customer waiting, so the scan task (checkout minigame) applies
+    const p = sim.players.get("p1")!;
+    Object.assign(p, { x: (CASHIER_ZONE.minX + CASHIER_ZONE.maxX) / 2, z: 7.1 });
+    for (const f of sim.fixtures.values()) if (f.id.startsWith("shelf")) f.stock = 18;
+    for (let t = 0; t < 400 && !sim.startHold("p1"); t += 0.1) sim.tick(0.1);
+    expect(p.action).toBe("scan");
     expect(sim.startMinigame("ghost", "checkout", 0)).toMatchObject({ ok: false, reason: "no_player" });
+    expect(sim.startMinigame("p1", "unpack", 0)).toMatchObject({ ok: false, reason: "no_station" });
     const r = sim.startMinigame("p1", "checkout", 0);
     if (!r.ok) throw new Error("start failed");
     const s = r.session;
@@ -161,6 +169,8 @@ describe("GameSim minigame integration", () => {
     expect(sim.completeMinigame("p1", honest(r2.session), 2000 + minTime(r2.session)).ok).toBe(true);
     expect(sim.minigameScore.get("p1")).toBe(r2.session.count * MINIGAME_CONFIG.checkout.rewardPerItem);
     expect(events.filter((t) => t === "minigame")).toHaveLength(1);
+    expect(events).toContain("sale");
+    expect(p.action).toBe("");
     sim.removePlayer("p1");
     expect(sim.minigameScore.has("p1")).toBe(false);
   });

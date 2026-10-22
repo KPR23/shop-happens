@@ -58,6 +58,7 @@ export class Game {
   private frames = 0;
   private ring: THREE.Mesh;
   private holdingE = false;
+  private mgSeen = false;
   private toastId = 0;
   private toastTimer = 0;
   /** Minigame entry point: gameplay code calls `game.minigames.launch(kind)` instead of starting hold-E. */
@@ -196,7 +197,14 @@ export class Game {
     if (code === "KeyE") {
       const i = this.interaction();
       if (!i) return;
-      if (i.duration > 0) {
+      if (i.kind === "scan" || i.kind === "unpack") {
+        // close-up minigame: the server holds the task and finishes it when the minigame validates
+        s.hold(true);
+        this.mgSeen = false;
+        void this.minigames.launch(i.kind === "scan" ? "checkout" : "unpack").then((ok) => {
+          if (!ok) s.hold(false);
+        });
+      } else if (i.duration > 0) {
         this.holdingE = true;
         s.hold(true);
       } else if (i.kind === "pickup") s.pickup(i.targetId);
@@ -237,6 +245,15 @@ export class Game {
     const started = hud.get().started;
     s?.update(dt);
     const view = s?.view;
+    if (this.minigames.active && s && view) {
+      // the minigame lives as long as the server-side task: closes if the worker is pushed away or the task ends
+      const act = view.players.get(s.localId)?.action ?? "";
+      if (act !== "") this.mgSeen = true;
+      else if (this.mgSeen) {
+        this.mgSeen = false;
+        this.minigames.cancel();
+      }
+    }
 
     if (s && view) {
       const mine = view.players.get(s.localId);

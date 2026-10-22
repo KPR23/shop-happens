@@ -57,6 +57,7 @@ export interface MinigameReport {
 
 export type MinigameFailReason =
   | "bad_request"
+  | "no_station"
   | "cooldown"
   | "no_session"
   | "wrong_session"

@@ -16,6 +16,7 @@ const REASONS: Record<MinigameFailReason, string> = {
   bad_items: "The server did not accept the items you handled.",
   too_few_actions: "Too few actions were recorded.",
   too_fast: "Suspiciously fast. The server did not accept it.",
+  no_station: "Not at the station",
   no_player: "You are not in the shop.",
 };
 
@@ -106,6 +107,12 @@ export class MinigameManager {
     if (!this.game || !this.stage) return;
     if (!this.submitting) this.game.update(dt);
     this.stage.render();
+  }
+
+  /** Server ended the task: close unless a result is already being submitted or shown. */
+  abort() {
+    if (this.resultShown || this.submitting) return;
+    this.cancel();
   }
 
   /** Esc: abandon the session without any reward. */
