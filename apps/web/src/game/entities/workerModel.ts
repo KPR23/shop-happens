@@ -3,12 +3,13 @@ import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeom
 
 /** Palette sampled from the worker character sheet. */
 export const WORKER_PALETTE = {
-  skin: 0xf6c4a0,
-  skinShade: 0xe9a782,
+  skin: 0xf7c3a0,
+  skinShade: 0xe8a07f,
+  blush: 0xf29a82,
   hat: 0xffc90e,
-  hatShade: 0xf2b200,
+  hatShade: 0xf0ae00,
   shirt: 0xf5791f,
-  overalls: 0x2c6bd0,
+  overalls: 0x2a68cf,
   overallsLight: 0x3a7be0,
   glove: 0x3f9142,
   dark: 0x35383b,
@@ -18,125 +19,145 @@ export const WORKER_PALETTE = {
   eye: 0x2a1812,
 } as const;
 
-// Three-step ramp gives the soft, cel-shaded "vinyl toy" look without hard edges.
-let ramp: THREE.DataTexture | undefined;
-function gradientMap() {
-  if (!ramp) {
-    ramp = new THREE.DataTexture(new Uint8Array([150, 205, 255]), 3, 1, THREE.RedFormat);
-    ramp.minFilter = ramp.magFilter = THREE.NearestFilter;
-    ramp.needsUpdate = true;
+// Soft "vinyl toy" shading: smooth physical material with a faint clearcoat, no hard cel bands.
+const mats = new Map<string, THREE.MeshPhysicalMaterial>();
+function mat(color: number, roughness = 0.55, coat = 0.25) {
+  const key = `${color}|${roughness}|${coat}`;
+  let m = mats.get(key);
+  if (!m) {
+    m = new THREE.MeshPhysicalMaterial({ color, roughness, metalness: 0, clearcoat: coat, clearcoatRoughness: 0.45, sheen: 0.2, sheenRoughness: 0.7, sheenColor: new THREE.Color(color), emissive: new THREE.Color(color).multiplyScalar(0.12) });
+    mats.set(key, m);
   }
-  return ramp;
-}
-
-const mats = new Map<number, THREE.MeshToonMaterial>();
-function toon(color: number) {
-  let m = mats.get(color);
-  if (!m) mats.set(color, (m = new THREE.MeshToonMaterial({ color, gradientMap: gradientMap() })));
   return m;
 }
 
-const sphere = new THREE.SphereGeometry(1, 28, 20);
-const cyl = new THREE.CylinderGeometry(1, 1, 1, 20);
-const dome = new THREE.SphereGeometry(1, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+const sphere = new THREE.SphereGeometry(1, 40, 28);
+const cyl = new THREE.CylinderGeometry(1, 1, 1, 32);
+const dome = new THREE.SphereGeometry(1, 48, 24, 0, Math.PI * 2, 0, Math.PI / 2);
+// front arc of a flat ring: the hat visor
+const visor = new THREE.CylinderGeometry(1, 1, 1, 40, 1, false, -1.15, 2.3);
 
 const boxes = new Map<string, RoundedBoxGeometry>();
 function box(w: number, h: number, d: number, r: number) {
   const key = `${w}|${h}|${d}|${r}`;
   let g = boxes.get(key);
-  if (!g) boxes.set(key, (g = new RoundedBoxGeometry(w, h, d, 3, r)));
+  if (!g) boxes.set(key, (g = new RoundedBoxGeometry(w, h, d, 6, r)));
   return g;
 }
 
 type V3 = [number, number, number];
-function add(parent: THREE.Object3D, geo: THREE.BufferGeometry, color: number, pos: V3, scale: V3 = [1, 1, 1], rot: V3 = [0, 0, 0]) {
-  const m = new THREE.Mesh(geo, toon(color));
-  m.position.set(...pos);
-  m.scale.set(...scale);
-  m.rotation.set(...rot);
-  m.castShadow = true;
-  parent.add(m);
-  return m;
+function add(parent: THREE.Object3D, geo: THREE.BufferGeometry, m: THREE.Material, pos: V3, scale: V3 = [1, 1, 1], rot: V3 = [0, 0, 0]) {
+  const mesh = new THREE.Mesh(geo, m);
+  mesh.position.set(...pos);
+  mesh.scale.set(...scale);
+  mesh.rotation.set(...rot);
+  mesh.castShadow = true;
+  parent.add(mesh);
+  return mesh;
 }
 
 export interface WorkerModel {
   root: THREE.Group;
+  /** leg/arm pivots swing around x; torso and head are separate pivots for secondary motion. */
   legL: THREE.Group;
   legR: THREE.Group;
   armL: THREE.Group;
   armR: THREE.Group;
+  torso: THREE.Group;
+  head: THREE.Group;
+  hat: THREE.Group;
+  eyes: THREE.Mesh[];
 }
 
-/** Builds the worker (faces +Z, ~1.9 units tall). Shared geometry/materials live for the page. */
+/** Builds the worker (faces +Z, ~2 units tall). Shared geometry/materials live for the page. */
 export function buildWorkerModel(shirtColor: number = WORKER_PALETTE.shirt): WorkerModel {
   const P = WORKER_PALETTE;
   const root = new THREE.Group();
-  const [legL, legR, armL, armR] = [0, 1, 2, 3].map(() => new THREE.Group()) as [THREE.Group, THREE.Group, THREE.Group, THREE.Group];
+  const g4 = () => new THREE.Group();
+  const [legL, legR, armL, armR, torso, head, hat] = [g4(), g4(), g4(), g4(), g4(), g4(), g4()];
 
-  // legs: blue trouser, dark boot with a rolled cuff, chunky brown sole
-  const trouser = box(0.26, 0.4, 0.27, 0.1);
-  const cuff = box(0.3, 0.1, 0.31, 0.04);
-  const boot = box(0.29, 0.2, 0.42, 0.09);
-  const sole = box(0.31, 0.07, 0.45, 0.03);
+  const skin = mat(P.skin, 0.5, 0.2);
+  const skinShade = mat(P.skinShade, 0.5, 0.1);
+  const blue = mat(P.overalls, 0.6, 0.2);
+  const blueLight = mat(P.overallsLight, 0.6, 0.2);
+  const shirt = mat(shirtColor, 0.6, 0.2);
+  const dark = mat(P.dark, 0.5, 0.35);
+  const glove = mat(P.glove, 0.55, 0.3);
+  const hatM = mat(P.hat, 0.42, 0.18);
+  const hatShade = mat(P.hatShade, 0.42, 0.18);
+  const hair = mat(P.hair, 0.55, 0.15);
+  const brown = mat(P.brown, 0.8, 0);
+  const grey = mat(P.grey, 0.35, 0.6);
+
+  // legs: trouser, rolled dark boot cuff, rounded boot toe, tread sole with a heel step
   for (const [leg, x] of [[legL, -0.15], [legR, 0.15]] as const) {
-    leg.position.set(x, 0.56, 0);
+    leg.position.set(x, 0.58, 0);
     root.add(leg);
-    add(leg, trouser, P.overalls, [0, -0.17, 0]);
-    add(leg, cuff, P.dark, [0, -0.36, 0.0]);
-    add(leg, boot, P.dark, [0, -0.46, 0.07]);
-    add(leg, sole, P.brown, [0, -0.53, 0.075]);
+    add(leg, box(0.27, 0.42, 0.28, 0.12), blue, [0, -0.17, 0]);
+    add(leg, box(0.31, 0.11, 0.32, 0.05), dark, [0, -0.37, 0]);
+    add(leg, box(0.3, 0.22, 0.44, 0.11), dark, [0, -0.47, 0.07]);
+    add(leg, box(0.325, 0.08, 0.47, 0.035), brown, [0, -0.55, 0.075]);
+    add(leg, box(0.33, 0.07, 0.12, 0.03), brown, [0, -0.52, -0.1]); // heel
   }
 
-  // torso: orange shirt under rounded blue overalls
-  add(root, box(0.62, 0.46, 0.42, 0.16), shirtColor, [0, 0.98, 0]);
-  add(root, box(0.56, 0.42, 0.4, 0.14), P.overalls, [0, 0.78, 0]);
-  add(root, box(0.46, 0.34, 0.07, 0.07), P.overalls, [0, 0.96, 0.2]); // bib
-  add(root, box(0.22, 0.13, 0.05, 0.05), P.overallsLight, [0, 0.9, 0.245]); // pocket
-  add(root, box(0.2, 0.025, 0.02, 0.01), P.overalls, [0, 0.955, 0.275]); // pocket flap seam
-  for (const x of [-0.17, 0.17]) {
-    add(root, box(0.075, 0.3, 0.06, 0.03), P.overalls, [x, 1.08, 0.19], [1, 1, 1], [0.12, 0, 0]); // front straps
-    add(root, box(0.075, 0.3, 0.06, 0.03), P.overalls, [x, 1.08, -0.19], [1, 1, 1], [-0.12, 0, 0]); // back straps
-    add(root, sphere, P.dark, [x, 1.0, 0.235], [0.04, 0.04, 0.02]); // buttons
+  // torso pivot sits at the waist so the upper body can lean and twist
+  torso.position.set(0, 0.7, 0);
+  root.add(torso);
+  const T = (y: number) => y - 0.7;
+  add(torso, box(0.64, 0.5, 0.44, 0.18), shirt, [0, T(1.0), 0]);
+  add(torso, box(0.58, 0.42, 0.42, 0.15), blue, [0, T(0.78), 0]);
+  add(torso, box(0.52, 0.5, 0.075, 0.05), blue, [0, T(0.98), 0.205]); // bib
+  add(torso, box(0.25, 0.14, 0.05, 0.05), blueLight, [0, T(0.9), 0.245]); // pocket
+  add(torso, box(0.22, 0.03, 0.025, 0.012), blue, [0, T(0.955), 0.275]);
+  for (const x of [-0.18, 0.18]) {
+    add(torso, box(0.08, 0.34, 0.06, 0.03), blue, [x, T(1.1), 0.205], [1, 1, 1], [0.1, 0, 0]); // straps
+    add(torso, box(0.08, 0.34, 0.06, 0.03), blue, [x, T(1.1), -0.205], [1, 1, 1], [-0.1, 0, 0]);
+    add(torso, sphere, dark, [x, T(1.02), 0.245], [0.042, 0.042, 0.02]); // buttons
   }
-  add(root, box(0.6, 0.09, 0.44, 0.04), P.dark, [0, 0.7, 0]); // belt
-  add(root, box(0.13, 0.09, 0.03, 0.02), P.grey, [0, 0.7, 0.225]); // buckle
-  add(root, box(0.5, 0.2, 0.34, 0.1), P.overalls, [0, 0.6, 0]); // hips
+  add(torso, box(0.62, 0.09, 0.46, 0.04), dark, [0, T(0.7), 0]); // belt
+  add(torso, box(0.13, 0.085, 0.03, 0.02), grey, [0, T(0.7), 0.235]); // buckle
+  add(torso, box(0.5, 0.2, 0.34, 0.1), blue, [0, T(0.6), 0]); // hips blend
 
-  // arms: short sleeve, skin, green cuff, dark glove fist with a green back patch
-  const sleeve = box(0.2, 0.2, 0.2, 0.08);
-  const forearm = cyl;
-  const glove = box(0.19, 0.19, 0.2, 0.08);
-  for (const [arm, x] of [[armL, -0.41], [armR, 0.41]] as const) {
-    arm.position.set(x, 1.1, 0);
-    root.add(arm);
-    add(arm, sleeve, shirtColor, [0, -0.08, 0]);
-    add(arm, forearm, P.skin, [0, -0.22, 0], [0.065, 0.1, 0.065]);
-    add(arm, cyl, P.glove, [0, -0.31, 0], [0.12, 0.07, 0.12]);
-    add(arm, glove, P.dark, [0, -0.44, 0.015]);
-    add(arm, box(0.16, 0.12, 0.05, 0.04), P.glove, [0, -0.43, 0.115]);
+  // arms: sleeve, skin, green cuff, big dark mitten with thumb and cuff patch
+  for (const [arm, s] of [[armL, -1], [armR, 1]] as const) {
+    arm.position.set(s * 0.42, T(1.14), 0);
+    torso.add(arm);
+    add(arm, sphere, shirt, [0, -0.07, 0], [0.12, 0.13, 0.12]);
+    add(arm, cyl, skin, [0, -0.22, 0], [0.068, 0.1, 0.068]);
+    add(arm, cyl, glove, [0, -0.32, 0], [0.125, 0.075, 0.125]);
+    add(arm, box(0.2, 0.2, 0.2, 0.09), dark, [0, -0.45, 0.01]);
+    add(arm, box(0.17, 0.12, 0.05, 0.04), glove, [0, -0.44, 0.115]);
+    add(arm, sphere, dark, [s * -0.1, -0.44, 0.07], [0.06, 0.09, 0.07]); // thumb
   }
 
-  // head: big, round, soft
-  add(root, sphere, P.skin, [0, 1.5, 0.02], [0.46, 0.42, 0.42]);
-  add(root, sphere, P.hair, [0, 1.5, -0.12], [0.45, 0.42, 0.36]);
+  // head pivots at the neck: big and soft, with ears, eyes, brows, hair and hat on top
+  head.position.set(0, 1.28, 0);
+  root.add(head);
+  const H = (y: number) => y - 1.28;
+  add(head, sphere, hair, [0, H(1.53), -0.15], [0.43, 0.42, 0.36]);
+  add(head, sphere, skin, [0, H(1.5), 0.03], [0.47, 0.43, 0.42]);
+  const eyes: THREE.Mesh[] = [];
   for (const s of [-1, 1]) {
-    add(root, sphere, P.skin, [s * 0.45, 1.44, 0.02], [0.09, 0.12, 0.08]); // ear
-    add(root, sphere, P.skinShade, [s * 0.46, 1.44, 0.035], [0.05, 0.075, 0.04]);
-    add(root, sphere, P.hair, [s * 0.38, 1.56, 0.12], [0.07, 0.18, 0.1]); // sideburn
-    add(root, sphere, P.eye, [s * 0.17, 1.44, 0.4], [0.065, 0.095, 0.035]); // eye
-    add(root, sphere, 0xffffff, [s * 0.185, 1.475, 0.43], [0.02, 0.025, 0.012]); // eye shine
-    add(root, box(0.2, 0.05, 0.05, 0.02), P.hair, [s * 0.17, 1.565, 0.41], [1, 1, 1], [0, 0, s * -0.1]); // brow
-    add(root, sphere, 0xf09a85, [s * 0.27, 1.34, 0.34], [0.07, 0.04, 0.02]); // blush
+    add(head, sphere, skin, [s * 0.46, H(1.45), 0.02], [0.095, 0.125, 0.085]); // ear
+    add(head, sphere, skinShade, [s * 0.47, H(1.45), 0.04], [0.05, 0.08, 0.04]);
+    add(head, sphere, hair, [s * 0.39, H(1.58), 0.1], [0.075, 0.2, 0.12]); // sideburn
+    const eye = add(head, sphere, mat(P.eye, 0.25, 0.8), [s * 0.17, H(1.45), 0.405], [0.068, 0.1, 0.035]);
+    eyes.push(eye);
+    add(head, sphere, mat(0xffffff, 0.2, 0), [s * 0.19, H(1.48), 0.435], [0.02, 0.026, 0.012]); // shine
+    add(head, box(0.2, 0.05, 0.05, 0.022), hair, [s * 0.17, H(1.565), 0.415], [1, 1, 1], [0, 0, s * -0.12]); // brow
+    add(head, sphere, mat(P.blush, 0.6, 0), [s * 0.28, H(1.35), 0.35], [0.075, 0.042, 0.02]); // blush
   }
-  add(root, sphere, P.skinShade, [0, 1.38, 0.43], [0.045, 0.035, 0.035]); // nose
+  add(head, sphere, skinShade, [0, H(1.39), 0.445], [0.045, 0.035, 0.035]); // nose
 
-  // hard hat: dome, three ridges, front plate and a wide rounded brim
-  add(root, dome, P.hat, [0, 1.7, 0], [0.5, 0.42, 0.5]);
-  add(root, cyl, P.hat, [0, 1.7, 0.04], [0.54, 0.045, 0.55]); // rim
-  add(root, cyl, P.hatShade, [0, 1.69, 0.06], [0.58, 0.03, 0.58]); // brim, pushed forward
-  add(root, box(0.14, 0.08, 0.7, 0.04), P.hat, [0, 2.11, 0]); // centre ridge
-  for (const s of [-1, 1]) add(root, box(0.1, 0.07, 0.62, 0.035), P.hat, [s * 0.22, 2.07, 0], [1, 1, 1], [0, 0, s * -0.38]);
-  add(root, box(0.3, 0.2, 0.1, 0.05), P.hat, [0, 1.9, 0.47], [1, 1, 1], [-0.25, 0, 0]); // front plate
+  // hard hat as its own pivot so it can lag the head a little
+  hat.position.set(0, H(1.7), 0);
+  head.add(hat);
+  add(hat, dome, hatM, [0, 0, 0], [0.5, 0.42, 0.5]);
+  add(hat, cyl, hatM, [0, 0, 0.03], [0.53, 0.045, 0.55]); // rim
+  add(hat, visor, hatShade, [0, -0.012, 0.05], [0.62, 0.03, 0.66]); // front visor
+  add(hat, box(0.14, 0.08, 0.7, 0.04), hatM, [0, 0.41, 0]); // centre ridge
+  for (const s of [-1, 1]) add(hat, box(0.1, 0.07, 0.62, 0.035), hatM, [s * 0.22, 0.37, 0], [1, 1, 1], [0, 0, s * -0.38]);
+  add(hat, box(0.3, 0.2, 0.1, 0.05), hatM, [0, 0.2, 0.47], [1, 1, 1], [-0.25, 0, 0]); // front plate
 
-  return { root, legL, legR, armL, armR };
+  return { root, legL, legR, armL, armR, torso, head, hat, eyes };
 }
