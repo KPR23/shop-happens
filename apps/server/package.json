@@ -1,0 +1,24 @@
+{
+  "name": "@shop/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc -p .",
+    "build": "tsc -p .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@colyseus/core": "^0.18.23",
+    "@colyseus/schema": "^5.0.42",
+    "@colyseus/ws-transport": "^0.18.4",
+    "@shop/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@colyseus/sdk": "^0.18.6",
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15"
+  }
+}
