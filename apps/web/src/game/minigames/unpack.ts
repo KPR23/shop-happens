@@ -67,6 +67,7 @@ export class UnpackGame implements Minigame {
   private finishIn = -1;
   private pulse = 0;
   private tmp = new THREE.Vector3();
+  private marker!: THREE.Mesh;
 
   start(ctx: MinigameContext) {
     this.ctx = ctx;
@@ -128,7 +129,8 @@ export class UnpackGame implements Minigame {
     ctx.items.forEach((type, i) => {
       const obj = makeProduct(type);
       const cols = 3;
-      obj.position.set(BOX.x + (i % cols - 1) * 0.5, TOP + 0.03, BOX.z + (Math.floor(i / cols) - 0.5) * 0.45);
+      obj.scale.setScalar(1.35);
+      obj.position.set(BOX.x + (i % cols - 1) * 0.55, TOP + 0.05, BOX.z + (Math.floor(i / cols) - 0.5) * 0.5);
       obj.rotation.y = ((i * 53) % 13) / 13 - 0.5;
       obj.visible = false;
       scene.add(obj);
@@ -147,8 +149,17 @@ export class UnpackGame implements Minigame {
     this.hand.position.copy(this.handTarget);
     scene.add(this.hand, this.offHand);
 
-    camera.position.set(0.2, 1.75, 1.9);
-    camera.lookAt(0.2, TOP + 0.2, -0.15);
+    // steep top-down view into the carton; box, crate and both hands must stay in frame at any aspect ratio
+    camera.position.set(0.85, 3.7, 1.3);
+    camera.lookAt(0.85, TOP, -0.1);
+    ctx.stage.fit = { halfWidth: 2.4, distance: camera.position.distanceTo(new THREE.Vector3(0.85, TOP, -0.1)) };
+    ctx.stage.resize();
+
+    this.marker = new THREE.Mesh(new THREE.RingGeometry(0.26, 0.31, 32), new THREE.MeshBasicMaterial({ color: 0xffd23f, side: THREE.DoubleSide, depthTest: false, transparent: true }));
+    this.marker.rotation.x = -Math.PI / 2;
+    this.marker.renderOrder = 10;
+    this.marker.visible = false;
+    scene.add(this.marker);
 
     ctx.stage.onDown = () => this.down();
     ctx.stage.onMove = () => this.move();
@@ -166,16 +177,19 @@ export class UnpackGame implements Minigame {
       return;
     }
     if (this.phase !== "take" || this.carry) return;
-    const hit = this.ctx.stage.pick(this.items.filter((i) => !i.taken).map((i) => i.obj));
-    if (!hit) return;
-    const item = this.items.find((i) => {
-      let o: THREE.Object3D | null = hit.object;
-      while (o) {
-        if (o === i.obj) return true;
-        o = o.parent;
+    // pick by screen distance to the product centre, so walls and hands can never block a click
+    const { ndc, camera } = this.ctx.stage;
+    let item: Item | undefined;
+    let best = 0.16;
+    for (const it of this.items) {
+      if (it.taken) continue;
+      const d = this.tmp.copy(it.obj.position).setY(it.obj.position.y + 0.1).project(camera);
+      const dist = Math.hypot((d.x - ndc.x) * camera.aspect, d.y - ndc.y);
+      if (dist < best) {
+        best = dist;
+        item = it;
       }
-      return false;
-    });
+    }
     if (!item) return;
     if (item !== this.items[this.next]) {
       this.ctx.beep(180, 140, "sawtooth");
@@ -187,7 +201,7 @@ export class UnpackGame implements Minigame {
 
   private move() {
     const p = this.ctx.stage.planePoint(this.phase === "cut" ? BOX_TOP + 0.12 : BOX_TOP + 0.4, this.tmp);
-    if (p && !this.carry) this.handTarget.set(THREE.MathUtils.clamp(p.x, -2.4, 2.6), p.y, THREE.MathUtils.clamp(p.z, -1, 0.9));
+    if (p && !this.carry) this.handTarget.set(THREE.MathUtils.clamp(p.x, -2.4, 2.6), p.y, THREE.MathUtils.clamp(p.z + (this.phase === "cut" ? 0 : 0.45), -1, 1.1));
     if (this.phase !== "cut" || !this.cutting || !p) return;
     // the blade must stay on the tape and advance continuously from the left end
     if (Math.abs(p.z - TAPE_Z) < 0.3 && p.x > this.cutX && p.x < this.cutX + 0.5) {
@@ -196,6 +210,19 @@ export class UnpackGame implements Minigame {
       this.cutLine.scale.x = len;
       this.cutLine.position.x = X0 + len / 2;
       if (this.cutX >= X1 - 0.12) this.openBox();
+    }
+  }
+
+  private setHandOpacity(a: number) {
+    for (const h of [this.hand, this.offHand]) {
+      h.traverse((o) => {
+        const m = (o as THREE.Mesh).material as THREE.Material | undefined;
+        if (m) {
+          m.transparent = true;
+          m.opacity = a;
+          m.depthWrite = false;
+        }
+      });
     }
   }
 
@@ -240,7 +267,16 @@ export class UnpackGame implements Minigame {
       this.flapR.rotation.z = -a;
       if (this.openT >= 1) {
         this.phase = "take";
-        this.handTarget.set(0.2, BOX_TOP + 0.5, 0.5);
+        this.handTarget.set(0.85, BOX_TOP + 0.5, 0.9);
+        this.setHandOpacity(0.3);
+      }
+    }
+    if (this.phase === "take" || this.phase === "done") {
+      const next = this.items[this.next];
+      this.marker.visible = !!next && !next.taken;
+      if (this.marker.visible) {
+        this.marker.position.set(next.obj.position.x, TOP + 0.06, next.obj.position.z);
+        this.marker.scale.setScalar(1 + 0.12 * Math.sin(this.pulse * 6));
       }
     }
 
@@ -270,14 +306,14 @@ export class UnpackGame implements Minigame {
         if (c.seg >= c.pts.length) {
           this.carry = null;
           this.ctx.beep(440, 60, "triangle", 0.08);
-          this.handTarget.set(0.2, BOX_TOP + 0.5, 0.5);
+          this.handTarget.set(0.85, BOX_TOP + 0.5, 0.9);
           if (this.takenOrder.length === this.items.length) {
             this.phase = "done";
             this.finishIn = 0.7;
           }
         }
       } else o.position.addScaledVector(this.tmp.copy(target).sub(o.position), step / dist);
-      this.handTarget.copy(o.position).add(this.tmp.set(0, 0.22, 0.1));
+      this.handTarget.copy(o.position).add(this.tmp.set(0, 0.22, 0.45));
     }
 
     if (this.finishIn >= 0) {
