@@ -8,7 +8,11 @@ export interface Session {
   onDisconnect?: (reason: string) => void;
   sendMove(x: number, z: number, rot: number): void;
   pickup(boxId: string): void;
-  put(drop: boolean): void;
-  update(dt: number, now: number): void;
+  put(): void;
+  throwBox(): void;
+  /** Start (true) or stop (false) the hold-to-act task that applies to the local worker. */
+  hold(on: boolean): void;
+  upgrade(id: string): void;
+  update(dt: number): void;
   dispose(): void;
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { MAX_UPGRADE_LEVEL, UPGRADES } from "@shop/shared";
 import { hud, useHud } from "../app/store";
 import { Game } from "../game/Game";
 import { LocalSession } from "../game/session/local";
@@ -70,7 +71,14 @@ export function App() {
     void connect();
   };
 
-  const complete = h.round === "complete";
+  const tips: Record<string, string> = {
+    prep: "Get ready: unpack crates, carry trays to the shelves, and put someone on the register. Hold E at the door to open early.",
+    open: "Customers are shopping! Keep shelves stocked and scan them out at the register.",
+    closing: "Closing time. Let the last customers pay.",
+    summary: "Day over. Spend your money on upgrades before tomorrow.",
+  };
+  const phaseName: Record<string, string> = { prep: "Preparing", open: "OPEN", closing: "Closing", summary: "Closed" };
+  const upgradeDefs = UPGRADES;
   return (
     <div className="app">
       <div ref={container} className="stage" />
@@ -94,13 +102,13 @@ export function App() {
             }}
           >
             <div className="logo">Shop<span>Happens</span></div>
-            <p>Run a chaotic store with your crew. Grab boxes, ride the belt, deliver the order.</p>
+            <p>Run a tiny store together: fetch stock, fill the shelves, serve the customers, and grow the shop day by day.</p>
             <label>
               Your name
               <input value={name} maxLength={14} placeholder="Worker" autoFocus onChange={(e) => setName(e.target.value)} />
             </label>
             <button type="submit">Start shift</button>
-            <small>Up to 5 players per room · WASD to move · E to pick up / put down</small>
+            <small>Up to 5 players per room · WASD to move · E to interact · Q to throw</small>
           </form>
         </div>
       )}
@@ -108,9 +116,15 @@ export function App() {
       {h.started && (
         <>
           <div className="panel objective">
-            <div className="title">Deliver {h.target} boxes</div>
-            <div className="count">Boxes delivered: <b>{h.delivered}/{h.target}</b></div>
-            <div className="bar"><i style={{ width: `${Math.min(100, (h.delivered / h.target) * 100)}%` }} /></div>
+            <div className="row">
+              <span className="title">Day {h.day}</span>
+              <span className={`phase ${h.phase}`}>{phaseName[h.phase]}</span>
+              <span className="clock">{h.clock}</span>
+            </div>
+            <div className="money">${h.money}</div>
+            <div className="stats">Today: <b>${h.earned}</b> · served <b>{h.served}</b> · lost <b>{h.lost}</b></div>
+            <div className="tip">{tips[h.phase]}</div>
+            {h.phase !== "summary" && <div className="phasetimer">{phaseName[h.phase]}: {h.phaseLeft}s</div>}
           </div>
 
           <div className={`panel status ${h.status}`}>
@@ -120,26 +134,66 @@ export function App() {
             {h.status === "offline" && !FORCE_LOCAL && <button onClick={() => void connect()}>Retry</button>}
           </div>
 
+          <div className="panel upgrades">
+            <div className="title">Upgrades</div>
+            {upgradeDefs.map((u) => {
+              const level = h.upgrades[u.id];
+              const cost = level >= MAX_UPGRADE_LEVEL ? null : u.costs[level];
+              return (
+                <button
+                  key={u.id}
+                  disabled={cost === null || h.money < cost}
+                  title={u.description}
+                  onClick={(e) => {
+                    game.current?.buyUpgrade(u.id);
+                    e.currentTarget.blur();
+                  }}
+                >
+                  <span>{u.name} <i>Lv {level}/{MAX_UPGRADE_LEVEL}</i></span>
+                  <b>{cost === null ? "MAX" : `$${cost}`}</b>
+                </button>
+              );
+            })}
+          </div>
+
           {h.showHelp && (
             <div className="panel help">
               <div className="title">How to play</div>
               <ul>
-                <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / arrows — move</li>
-                <li><kbd>E</kbd> — pick up / put down a box</li>
-                <li><kbd>Q</kbd> — drop the box you carry</li>
-                <li>Put boxes on the conveyor, or carry them to the green <b>delivery zone</b></li>
+                <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / arrows — move (workers bump into each other)</li>
+                <li><kbd>E</kbd> — tap to pick up / set a box down; <b>hold</b> for work (unpack, stock, scan, drive)</li>
+                <li><kbd>Q</kbd> — throw the box you carry about 3 m</li>
+                <li><b>Stock chain:</b> van → belt → crate → unpack into the rack → take a tray → fill a shelf</li>
+                <li><b>Register:</b> stand behind the counter, hold <kbd>E</kbd> to scan the first customer</li>
                 <li><kbd>Esc</kbd> — hide this panel</li>
               </ul>
             </div>
           )}
           {!h.showHelp && <div className="panel mini">Esc · controls</div>}
 
-          {h.hint && <div className="hint">{h.hint.split(/(\[[A-Z]\])/).map((p, i) => (/^\[[A-Z]\]$/.test(p) ? <kbd key={i}>{p[1]}</kbd> : <span key={i}>{p}</span>))}</div>}
+          {h.taskLabel && (
+            <div className="task">
+              <span>{h.taskLabel}…</span>
+              <div className="bar"><i style={{ width: `${h.taskProgress * 100}%` }} /></div>
+            </div>
+          )}
+          {h.hint && !h.taskLabel && <div className="hint">{h.hint.split(/(\[[A-Z]\])/).map((p, i) => (/^\[[A-Z]\]$/.test(p) ? <kbd key={i}>{p[1]}</kbd> : <span key={i}>{p}</span>))}</div>}
+          {h.toast && <div className="toast" key={h.toast.id}>{h.toast.text}</div>}
 
-          {complete && (
+          {h.awayLeft > 0 && (
+            <div className="overlay away">
+              <div className="card">
+                <h2>Driving to the wholesaler…</h2>
+                <p>Back in {h.awayLeft}s with fresh crates. Your crew keeps the shop running!</p>
+              </div>
+            </div>
+          )}
+
+          {h.phase === "summary" && (
             <div className="banner">
-              <b>Order complete!</b>
-              <span>{h.target} boxes delivered — a fresh shift starts in a few seconds…</span>
+              <b>Day {h.day} complete</b>
+              <span>Served {h.served} · lost {h.lost} · earned ${h.earned}</span>
+              <span>Next day starts in {h.phaseLeft}s — buy upgrades now!</span>
             </div>
           )}
         </>

@@ -21,11 +21,21 @@ export class LocalSession implements Session {
   pickup(boxId: string) {
     this.sim.pickup(this.localId, boxId);
   }
-  put(drop: boolean) {
-    this.sim.put(this.localId, drop);
+  put() {
+    this.sim.put(this.localId);
   }
-  update(dt: number, now: number) {
-    this.sim.tick(dt, now);
+  throwBox() {
+    this.sim.throwBox(this.localId);
+  }
+  hold(on: boolean) {
+    if (on) this.sim.startHold(this.localId);
+    else this.sim.stopHold(this.localId);
+  }
+  upgrade(id: string) {
+    this.sim.buyUpgrade(this.localId, id);
+  }
+  update(dt: number) {
+    this.sim.tick(dt);
   }
   dispose() {
     this.sim.onEvent = undefined;

@@ -1,14 +1,14 @@
 import * as THREE from "three";
 import {
   CLIENT_SEND_HZ,
-  CONVEYOR,
-  ORDER_ZONE,
-  CARRY_DISTANCE,
-  PICKUP_RANGE,
+  PLAYER_DIAMETER,
   PLAYER_SPEED,
   isWalkable,
-  pointInRect,
+  resolveInteraction,
   resolveMove,
+  type CustomerData,
+  type Interaction,
+  type PlayerData,
   type SimEvent,
 } from "@shop/shared";
 import { hud } from "../app/store";
@@ -18,17 +18,19 @@ import { Input } from "./input";
 import { World } from "./scene/world";
 import type { Session } from "./session/types";
 
-interface Remote {
+interface Actor {
   worker: Worker;
   x: number;
   z: number;
   rot: number;
   speed: number;
-  name: string;
 }
 
-const HINT_RANGE = PICKUP_RANGE - 0.3;
 const angleLerp = (a: number, b: number, k: number) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * k;
+const fmtClock = (min: number) => {
+  const m = Math.round(min / 5) * 5;
+  return `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+};
 
 /** One renderer, one rAF loop. React never touches the per-frame path; HUD values are pushed only on change. */
 export class Game {
@@ -38,7 +40,8 @@ export class Game {
   private world = new World();
   private boxes = new Boxes();
   private input = new Input();
-  private workers = new Map<string, Remote>();
+  private staff = new Map<string, Actor>();
+  private shoppers = new Map<string, Actor>();
   private session: Session | null = null;
   private me = { x: 0, z: 0, rot: Math.PI, speed: 0, ready: false };
   private camTarget = new THREE.Vector3();
@@ -53,6 +56,9 @@ export class Game {
   private disposed = false;
   private frames = 0;
   private ring: THREE.Mesh;
+  private holdingE = false;
+  private toastId = 0;
+  private toastTimer = 0;
 
   constructor(private container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
@@ -79,36 +85,67 @@ export class Game {
     this.scene.add(this.world.group, this.boxes.root);
 
     const ringGeo = new THREE.RingGeometry(0.5, 0.62, 28);
-    this.ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }));
+    this.ring = new THREE.Mesh(
+      ringGeo,
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }),
+    );
     this.ring.rotation.x = -Math.PI / 2;
     this.ring.visible = false;
     this.scene.add(this.ring);
 
     this.input.onPress = (code) => this.onKey(code);
+    this.input.onRelease = (code) => this.onRelease(code);
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(container);
     this.resize();
-    if (import.meta.env.DEV) (window as unknown as { __shop: unknown }).__shop = () => ({ server: this.session ? { ...this.session.view.players.get(this.session.localId) } : null, me: { ...this.me }, frames: this.frames, keys: this.input.axis() });
+    if (import.meta.env.DEV) {
+      (window as unknown as { __shop: unknown }).__shop = () => ({
+        server: this.session ? { ...this.session.view.players.get(this.session.localId) } : null,
+        me: { ...this.me },
+        frames: this.frames,
+        keys: this.input.axis(),
+        hud: hud.get(),
+        view: this.session?.view,
+      });
+    }
     this.raf = requestAnimationFrame(this.frame);
   }
 
   setSession(s: Session | null) {
     this.session?.dispose();
-    this.workers.forEach((w) => w.worker.dispose());
-    this.workers.clear();
+    this.staff.forEach((w) => w.worker.dispose());
+    this.staff.clear();
+    this.shoppers.forEach((w) => w.worker.dispose());
+    this.shoppers.clear();
     this.boxes.clear();
     this.me.ready = false;
+    this.holdingE = false;
     this.session = s;
-    if (s) {
-      s.onEvent = (e) => this.onSimEvent(e);
-    }
+    if (s) s.onEvent = (e) => this.onSimEvent(e);
+  }
+
+  buyUpgrade(id: string) {
+    this.session?.upgrade(id);
+  }
+
+  private toast(text: string) {
+    hud.set({ toast: { id: ++this.toastId, text } });
+    clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => hud.set({ toast: null }), 4000);
   }
 
   private onSimEvent(e: SimEvent) {
-    if (e.type === "delivered") {
-      this.world.celebrate(e.x, e.z, e.count);
+    if (e.type === "sale") {
+      this.world.sale(e.x, e.z, e.amount);
       this.ding();
-    } else if (e.type === "complete") this.ding(true);
+    } else if (e.type === "lost") this.world.lost(e.x, e.z);
+    else if (e.type === "toast") this.toast(e.text);
+    else if (e.type === "phase") {
+      this.toast(
+        e.phase === "open" ? `Day ${e.day}: the store is OPEN!` : e.phase === "closing" ? "Closing time — customers are finishing up" : e.phase === "summary" ? `Day ${e.day} is over` : `Day ${e.day}: get the store ready!`,
+      );
+      if (e.phase === "open") this.ding(true);
+    }
   }
 
   private ding(big = false) {
@@ -133,34 +170,40 @@ export class Game {
     }
   }
 
+  /** The local worker as the shared rules see it: server state, but at the predicted position. */
+  private localPlayer(): PlayerData | undefined {
+    const s = this.session;
+    const mine = s?.view.players.get(s.localId);
+    return mine && { ...mine, x: this.me.x, z: this.me.z, rot: this.me.rot };
+  }
+
+  private interaction(): Interaction | null {
+    const p = this.localPlayer();
+    return p && this.session ? resolveInteraction(this.session.view, p) : null;
+  }
+
   private onKey(code: string) {
     if (code === "Escape") return hud.set({ showHelp: !hud.get().showHelp });
     const s = this.session;
     if (!s || !hud.get().started) return;
     const mine = s.view.players.get(s.localId);
-    if (!mine) return;
+    if (!mine || mine.away) return;
     if (code === "KeyE") {
-      if (mine.heldBoxId) s.put(false);
-      else {
-        const id = this.nearestBox();
-        if (id) s.pickup(id);
-      }
-    } else if (code === "KeyQ" && mine.heldBoxId) s.put(true);
+      const i = this.interaction();
+      if (!i) return;
+      if (i.duration > 0) {
+        this.holdingE = true;
+        s.hold(true);
+      } else if (i.kind === "pickup") s.pickup(i.targetId);
+      else if (i.kind === "put") s.put();
+    } else if (code === "KeyQ" && mine.heldBoxId) s.throwBox();
   }
 
-  private nearestBox(): string | null {
-    const s = this.session!;
-    let best: string | null = null;
-    let bd = HINT_RANGE;
-    for (const b of s.view.boxes.values()) {
-      if (b.state !== "available" && b.state !== "onConveyor") continue;
-      const d = Math.hypot(b.x - this.me.x, b.z - this.me.z);
-      if (d < bd) {
-        bd = d;
-        best = b.id;
-      }
+  private onRelease(code: string) {
+    if ((code === "KeyE" || code === "Blur") && this.holdingE) {
+      this.holdingE = false;
+      this.session?.hold(false);
     }
-    return best;
   }
 
   private resize() {
@@ -168,7 +211,6 @@ export class Game {
     const h = Math.max(1, this.container.clientHeight);
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
-    // keep the play area framed on narrow windows
     this.camera.fov = this.camera.aspect < 1.5 ? 32 * Math.min(1.9, 1.5 / this.camera.aspect) : 32;
     this.camera.updateProjectionMatrix();
   }
@@ -180,14 +222,14 @@ export class Game {
     this.last = now;
     this.time += dt;
     this.frames++;
-    this.step(dt, now);
+    this.step(dt);
     this.renderer.render(this.scene, this.camera);
   };
 
-  private step(dt: number, now: number) {
+  private step(dt: number) {
     const s = this.session;
     const started = hud.get().started;
-    s?.update(dt, now);
+    s?.update(dt);
     const view = s?.view;
 
     if (s && view) {
@@ -195,8 +237,8 @@ export class Game {
       if (mine && !this.me.ready) Object.assign(this.me, { x: mine.x, z: mine.z, rot: mine.rot, ready: true });
 
       if (mine && this.me.ready) {
-        // movement: client-predicted with the shared collision rules; the server validates it
-        const a = started ? this.input.axis() : { x: 0, z: 0 };
+        const busy = mine.away || mine.action !== "";
+        const a = started && !busy ? this.input.axis() : { x: 0, z: 0 };
         const len = Math.hypot(a.x, a.z);
         const px = this.me.x;
         const pz = this.me.z;
@@ -206,11 +248,31 @@ export class Game {
           this.me.z = r.z;
           this.me.rot = angleLerp(this.me.rot, Math.atan2(a.x, a.z), 1 - Math.exp(-dt * 16));
         }
+        // other workers are soft obstacles: we give ground, the server shoves them along
+        this.staff.forEach((o, id) => {
+          if (id === s.localId || view.players.get(id)?.away) return;
+          const dx = this.me.x - o.x;
+          const dz = this.me.z - o.z;
+          const d = Math.hypot(dx, dz);
+          if (d < PLAYER_DIAMETER && d > 1e-4) {
+            const push = (PLAYER_DIAMETER - d) * 0.6;
+            const nx = this.me.x + (dx / d) * push;
+            const nz = this.me.z + (dz / d) * push;
+            if (isWalkable(nx, nz)) {
+              this.me.x = nx;
+              this.me.z = nz;
+            }
+          }
+        });
         this.me.speed = Math.hypot(this.me.x - px, this.me.z - pz) / Math.max(dt, 1e-3);
-        // server correction (rejected move, teleport, round reset)
-        if (Math.hypot(mine.x - this.me.x, mine.z - this.me.z) > 2.5 || !isWalkable(this.me.x, this.me.z)) {
+        // server reconciliation: gentle pull for small drift (pushes), hard snap for big jumps
+        const drift = Math.hypot(mine.x - this.me.x, mine.z - this.me.z);
+        if (drift > 2.5 || !isWalkable(this.me.x, this.me.z) || mine.away) {
           this.me.x = mine.x;
           this.me.z = mine.z;
+        } else if (drift > 1.2) {
+          this.me.x += (mine.x - this.me.x) * 0.2;
+          this.me.z += (mine.z - this.me.z) * 0.2;
         }
         this.sendAcc += dt;
         if (this.sendAcc >= 1 / CLIENT_SEND_HZ) {
@@ -223,32 +285,31 @@ export class Game {
         }
       }
 
-      this.syncWorkers(dt, view.players, s.localId);
-      this.updateHint(s, view.phase);
-      this.world.setProgress(view.delivered, view.target);
-      hud.set({ delivered: view.delivered, target: view.target, players: view.players.size, round: view.phase });
-      this.boxes.update(dt, this.time, view.boxes, (id) => this.holderPos(id, s.localId), this.highlight);
+      this.syncStaff(dt, view.players, s.localId);
+      this.syncShoppers(dt, view.customers);
+      this.updateHud(s);
+      this.boxes.update(dt, this.time, view.boxes, (id) => this.staff.get(id) ?? (id === s.localId ? this.me : undefined), this.highlight);
+      for (const f of view.fixtures.values()) this.world.setFixtureStock(f.id, f.stock);
+      this.world.setVanAway(view.van.state === "away");
+      this.world.setPhase(
+        view.phase,
+        view.phase === "prep" ? "Opens 09:00" : view.phase === "open" ? "Open until 18:00" : view.phase === "closing" ? "Closing up" : "See you tomorrow",
+      );
     }
 
     this.world.update(dt, this.time);
     this.updateCamera(dt);
   }
 
-  private holderPos(id: string, localId: string) {
-    if (id === localId) return this.me;
-    return this.workers.get(id);
-  }
-
-  private syncWorkers(dt: number, players: ReadonlyMap<string, { id: string; name: string; colorIndex: number; x: number; z: number; rot: number; heldBoxId: string }>, localId: string) {
+  private syncStaff(dt: number, players: ReadonlyMap<string, PlayerData>, localId: string) {
     for (const [id, p] of players) {
-      let w = this.workers.get(id);
+      let w = this.staff.get(id);
       if (!w) {
-        const worker = new Worker(p.colorIndex, p.name, id === localId);
+        const worker = new Worker({ kind: "staff", colorIndex: p.colorIndex, name: p.name, isLocal: id === localId });
         this.scene.add(worker.group);
-        w = { worker, x: p.x, z: p.z, rot: p.rot, speed: 0, name: p.name };
-        this.workers.set(id, w);
+        w = { worker, x: p.x, z: p.z, rot: p.rot, speed: 0 };
+        this.staff.set(id, w);
       }
-      const t = this.time;
       if (id === localId) {
         w.x = this.me.x;
         w.z = this.me.z;
@@ -264,62 +325,101 @@ export class Game {
         w.z = nz;
         w.rot = angleLerp(w.rot, p.rot, k);
       }
-      w.worker.update(dt, w.x, w.z, w.rot, w.speed, !!p.heldBoxId, t);
+      w.worker.setVisible(!p.away);
+      w.worker.update(dt, w.x, w.z, w.rot, w.speed, !!p.heldBoxId, this.time, p.actionProgress);
     }
-    for (const [id, w] of this.workers) {
+    for (const [id, w] of this.staff) {
       if (!players.has(id)) {
         w.worker.dispose();
-        this.workers.delete(id);
+        this.staff.delete(id);
       }
     }
   }
 
-  private updateHint(s: Session, phase: string) {
-    const mine = s.view.players.get(s.localId);
-    let hint = "";
-    this.highlight = null;
-    let nearInput = false;
-    if (mine && hud.get().started) {
-      if (mine.heldBoxId) {
-        const fx = this.me.x + Math.sin(this.me.rot) * CARRY_DISTANCE;
-        const fz = this.me.z + Math.cos(this.me.rot) * CARRY_DISTANCE;
-        nearInput = Math.hypot(this.me.x - CONVEYOR.start.x, this.me.z - CONVEYOR.start.z) <= CONVEYOR.inputRadius;
-        if (pointInRect(fx, fz, ORDER_ZONE) || pointInRect(this.me.x, this.me.z, ORDER_ZONE)) hint = "[E] Deliver box";
-        else if (nearInput) hint = "[E] Put box on conveyor";
-        else hint = "[E] Put down box   [Q] Drop";
-      } else {
-        const id = this.nearestBox();
-        if (id) {
-          this.highlight = id;
-          hint = "[E] Pick up box";
-        }
+  private syncShoppers(dt: number, customers: ReadonlyMap<string, CustomerData>) {
+    for (const [id, c] of customers) {
+      let w = this.shoppers.get(id);
+      if (!w) {
+        const worker = new Worker({ kind: "customer", colorIndex: c.skin, name: "" });
+        this.scene.add(worker.group);
+        w = { worker, x: c.x, z: c.z, rot: c.rot, speed: 0 };
+        this.shoppers.set(id, w);
+      }
+      const k = 1 - Math.exp(-dt * 10);
+      const nx = w.x + (c.x - w.x) * k;
+      const nz = w.z + (c.z - w.z) * k;
+      w.speed = Math.hypot(nx - w.x, nz - w.z) / Math.max(dt, 1e-3);
+      w.x = nx;
+      w.z = nz;
+      w.rot = angleLerp(w.rot, c.rot, k);
+      if (c.state === "waiting") {
+        const col = c.patience > 0.5 ? "rgba(47,179,107,0.95)" : c.patience > 0.25 ? "rgba(240,170,20,0.95)" : "rgba(224,67,75,0.95)";
+        w.worker.setTag(`${c.items} item${c.items === 1 ? "" : "s"}`, { bg: col, fg: "#fff" });
+      } else if (c.state === "leavingSad") w.worker.setTag("grr…", { bg: "rgba(224,67,75,0.95)", fg: "#fff" });
+      else w.worker.setTag("");
+      w.worker.update(dt, w.x, w.z, w.rot, w.speed, c.items > 0 && c.state !== "leaving", this.time, 0);
+    }
+    for (const [id, w] of this.shoppers) {
+      if (!customers.has(id)) {
+        w.worker.dispose();
+        this.shoppers.delete(id);
       }
     }
-    if (phase === "complete") hint = "";
-    this.world.setInputGlow(nearInput);
-    hud.set({ hint });
-    const hb = this.highlight && s.view.boxes.get(this.highlight);
+  }
+
+  private updateHud(s: Session) {
+    const v = s.view;
+    const mine = v.players.get(s.localId);
+    const i = mine && hud.get().started ? this.interaction() : null;
+    this.highlight = i?.kind === "pickup" ? i.targetId : null;
+    let hint = "";
+    if (i) {
+      if (i.kind === "info") hint = i.label;
+      else if (i.duration > 0) hint = `Hold [E] ${i.label.replace(/^Hold:\s*/, "")} (${i.duration.toFixed(1)}s)`;
+      else hint = `[E] ${i.label}`;
+    }
+    if (mine?.heldBoxId && !mine.away && mine.action === "") hint += hint ? "   [Q] Throw" : "[Q] Throw";
+    const hb = this.highlight ? v.boxes.get(this.highlight) : undefined;
     this.ring.visible = !!hb;
     if (hb) this.ring.position.set(hb.x, 0.12, hb.z);
+    const taskLabels: Record<string, string> = { unpack: "Unpacking crate", take: "Taking goods", stock: "Stocking the shelf", scan: "Scanning items", drive: "Starting the van", open: "Opening the store" };
+    hud.set({
+      players: v.players.size,
+      money: v.money,
+      day: v.day,
+      phase: v.phase,
+      phaseLeft: Math.ceil(v.phaseLeft),
+      clock: fmtClock(v.clock),
+      earned: v.stats.earned,
+      served: v.stats.served,
+      lost: v.stats.lost,
+      upgrades: v.upgrades,
+      hint,
+      taskLabel: mine?.action ? taskLabels[mine.action] : "",
+      taskProgress: Math.round((mine?.actionProgress ?? 0) * 50) / 50,
+      awayLeft: mine?.away ? Math.ceil(v.van.left) : 0,
+    });
   }
 
   private updateCamera(dt: number) {
-    const tx = THREE.MathUtils.clamp(this.me.x, -6, 6);
-    const tz = THREE.MathUtils.clamp(this.me.z, -2, 3);
+    const tx = THREE.MathUtils.clamp(this.me.x, -5, 5);
+    const tz = THREE.MathUtils.clamp(this.me.z, -2.5, 3.5);
     const k = 1 - Math.exp(-dt * 4);
     this.camTarget.x += (tx - this.camTarget.x) * k;
     this.camTarget.z += (tz - this.camTarget.z) * k;
-    this.camera.position.set(this.camTarget.x * 0.9, 19, this.camTarget.z + 17);
+    this.camera.position.set(this.camTarget.x * 0.9, 23, this.camTarget.z + 20);
     this.camera.lookAt(this.camTarget.x * 0.9, 0.3, this.camTarget.z - 0.5);
   }
 
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
+    clearTimeout(this.toastTimer);
     this.ro.disconnect();
     this.input.dispose();
     this.session?.dispose();
-    this.workers.forEach((w) => w.worker.dispose());
+    this.staff.forEach((w) => w.worker.dispose());
+    this.shoppers.forEach((w) => w.worker.dispose());
     this.world.dispose();
     this.ring.geometry.dispose();
     (this.ring.material as THREE.Material).dispose();

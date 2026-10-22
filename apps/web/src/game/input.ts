@@ -7,6 +7,7 @@ const isTyping = (t: EventTarget | null) => {
 export class Input {
   private down = new Set<string>();
   onPress?: (code: string) => void;
+  onRelease?: (code: string) => void;
 
   private keydown = (e: KeyboardEvent) => {
     if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -14,8 +15,14 @@ export class Input {
     if (!e.repeat) this.onPress?.(e.code);
     this.down.add(e.code);
   };
-  private keyup = (e: KeyboardEvent) => this.down.delete(e.code);
-  private blur = () => this.down.clear();
+  private keyup = (e: KeyboardEvent) => {
+    this.down.delete(e.code);
+    this.onRelease?.(e.code);
+  };
+  private blur = () => {
+    this.down.clear();
+    this.onRelease?.("Blur");
+  };
 
   constructor() {
     window.addEventListener("keydown", this.keydown);

@@ -30,50 +30,74 @@ Or separately: `pnpm dev:server` and `pnpm dev:web`. Open <http://localhost:5173
 - Point the client at another server with `VITE_SERVER_URL=ws://host:2567 pnpm dev:web`.
   The default is `ws://<page hostname>:2567`, so opening the Vite "Network" URL from another machine on the LAN works.
 
+## How the game plays
+
+A manual-first store. The day runs on a clock: **prep → open (09:00–18:00) → closing → summary**, then the next day.
+Everything is done by hand; roles (cashier, warehouse, driver) are simply whatever each player is doing.
+
+```
+wholesaler van ─► belt ─► crate ─► (hold E) unpack into rack ─► (hold E) take a tray ─► (hold E) fill a shelf
+                                                                                   customers buy ─► cashier (hold E) scans ─► $$$
+```
+
+- **Van:** stand in the yellow bay, hold E to drive to the wholesaler (costs $50). The driver is away for ~12 s; the crates then come down the belt.
+- **Warehouse:** crates end up at the racks. Hold E at a rack with a crate to unpack it (stock goes into the rack); hold E empty-handed to take a tray of goods.
+- **Shelves:** hold E (5 s) at a shelf with a tray to stock it. Shelf and rack contents are visible on the models and in the small labels.
+- **Customers (NPC):** come in while the store is open, pick a stocked shelf, take 1–3 items, queue at the register. Empty shelves or a long wait lose the customer.
+- **Register:** stand behind the counter (blue mat); hold E to scan the first customer in line (1 s per item). Sales add money.
+- **Door:** hold E at the door during prep to open early.
+- **Upgrades:** the panel on the right buys faster hands, a better wholesaler deal, and advertising with the money you earn.
+- Workers are soft bodies: walking into someone nudges them (resolved on the server).
+
 ## Controls
 
 | Key | Action |
 | --- | --- |
 | WASD / arrows | Move (screen-relative; the camera does not rotate) |
-| E | Pick up the highlighted box / put down the box you carry (belt input, delivery zone, or floor) |
-| Q | Drop the carried box on the floor |
+| E (tap) | Pick up the highlighted box, or set down the one you carry (onto the belt when standing at its start) |
+| E (hold) | Work: unpack, take goods, stock a shelf, scan, drive the van, open the store. The hint and a progress bar show what applies |
+| Q | Throw the carried box about 3 m (visible arc; it stops at obstacles) |
 | Esc | Show/hide the help panel |
-
-Goal: deliver 5 boxes. Put a box on the belt near the green "PUT BOX ON BELT" ring, or carry it into the green delivery zone.
-When the target is reached the round resets after a few seconds.
 
 ## Test multiplayer locally
 
 1. `pnpm dev`
 2. Open <http://localhost:5173> in two or more tabs or windows (up to five share a room; the sixth player gets a new room).
-3. Give each tab a different name. You should see each other's workers, the "N / 5 players" chip, and boxes carried by others.
-4. Try to pick up the same box from two tabs at once: only one succeeds. Close a tab while it carries a box: the box drops back on the floor.
+3. Give each tab a different name. You should see each other's workers, the "N / 5 players" chip, carried boxes, task progress bars, shelf stock and customers.
+4. Try to pick up the same crate from two tabs at once: only one succeeds. Close a tab while it carries a box: the box drops back on the floor. Walk into the other worker: they get shoved along.
 
 ## Checks
 
 ```bash
 pnpm typecheck   # tsc in all packages
 pnpm lint        # eslint
-pnpm test        # vitest: shared rules (unit) + server (real Colyseus server, real SDK clients)
+pnpm test        # vitest: shared rules (24 unit tests) + server (real Colyseus server, real SDK clients; ~40 s)
 pnpm build       # production client bundle in apps/web/dist
 ```
 
 ## How multiplayer works
 
-- Clients send **intents** (`move`, `pickup {boxId}`, `put {drop}`) at ≤20 Hz for movement; the server rate-limits every message type.
-- The server validates: ids, interaction range, one carried box per worker, boxes held by someone else, movement speed and walkability
-  (no walking through shelves, walls or teleporting). Delivery is a state transition (`delivered`) that can only happen once per box.
-- Players move with **client-side prediction** using the shared collision code; the server accepts or rejects reported positions, and a
-  rejected/diverged client is snapped back to the server position. Remote workers and all boxes are smoothed on the client.
-- The server ticks at 20 Hz and writes to the Colyseus schema only on change. Rendering runs at display rate, independent of that.
-- A leaving player's carried box is released to the floor.
+- Clients send **intents**: `move` (≤20 Hz), `pickup {boxId}`, `put`, `throw`, `hold {on}` and `upgrade {id}`. The server rate-limits every type.
+- For a hold, the client only says "I'm holding E". The server decides which task applies (`resolveInteraction`, shared with the client for hints),
+  runs the timer, cancels it if the worker leaves or the situation changes, and applies the effect when it completes.
+- The server validates ids, range, one carried box per worker, boxes held by someone else, stock levels, money, and movement (speed, walls, no teleporting).
+- Players are **client-predicted** using the shared collision code; the server accepts or rejects reported positions. Small drift (shoves) is pulled in
+  gently, big jumps snap. Remote workers, customers and boxes are smoothed on the client.
+- Customers, the day clock, money, stock and upgrades live only in the server's `GameSim`; the room mirrors them into the Colyseus schema (written only on change, 20 Hz).
+- A leaving player's carried box is released and their task is cancelled.
+
+### Adding a task (e.g. a close-up minigame)
+
+Hold-tasks are data-driven in `packages/shared/src/interaction.ts` (`resolveInteraction`: when does a task apply, how long, what label) and
+`sim.ts` (`startHold` / `stopHold` / `completeTask`: what it does). A minigame can start a task through `session.hold(true)`, show its own UI while
+`players[localId].action` is set, and let the server complete the task.
 
 ## Known limitations / placeholders
 
-- **Rapier is not used.** The slice needed no rigid-body behaviour (belt is a waypoint rule, collisions are circle-vs-box).
-  Throwing, tumbling boxes and similar are the natural place to add it next.
+- **Rapier is not used.** Nothing in this slice needs rigid bodies (belt is a waypoint rule, collisions are circles vs boxes, throws are a fixed arc).
 - Players are client-predicted with server *validation* (not full server-side simulation of input), so a modified client can move at up to ~1.6x speed.
-- No reconnection: if the connection drops the game tells you and offline mode / a page reload is needed.
-- Q is a plain drop, not a throw.
-- Worker and props are primitive-built placeholders (art direction follows the supplied references); the `Worker` class is the seam for a GLB model.
-- No persistence, accounts, audio assets (a synthesized "ding" plays on delivery), or mobile/touch controls.
+- No reconnection: if the connection drops the game tells you and a page reload (or offline mode) is needed.
+- One wholesaler van, fixed prices and one product type; shelf stock is a single number per shelf (no per-product items yet).
+- Customers use a simple grid path and do not collide with workers; no cleaning, no theft, no stock quality.
+- Worker, customers and props are primitive-built placeholders following the supplied art direction; `Worker` is the seam for a GLB model.
+- No persistence or accounts (a room resets when emptied). No mobile/touch controls. The only audio is a synthesized chime.

@@ -54,55 +54,92 @@ afterAll(async () => {
 });
 
 describe("multiplayer room", () => {
-  it("shares a room, state, exclusive pickup, delivery, capacity and disconnect release", async () => {
+  it("shares state; exclusive pickup; hold tasks; stock chain; customers; upgrades; capacity; disconnect release", async () => {
     const a = await join("Ann");
     const b = await join("Bob");
     const c = await join("Cy");
     expect(b.roomId).toBe(a.roomId);
     await waitFor(() => a.state.players.size === 3 && c.state.players.size === 3);
-    expect(a.state.boxes.size).toBeGreaterThanOrEqual(6);
+    const crateIds = [...a.state.boxes.values()].filter((bx: any) => bx.type === "crate").map((bx: any) => bx.id);
+    expect(crateIds.length).toBe(2);
+    expect(a.state.fixtures.get("rackA").stock).toBe(24);
 
-    // Two clients walk next to the same box and request pickup in the same instant.
-    const target = [...a.state.boxes.values()].find((bx: any) => bx.x === -6.5 && bx.z === 3.5) as any;
-    await Promise.all([walk(a, [[-2, 5], [-6.5, 5], [-6.5, 4.3]]), walk(b, [[1, 5], [-6.5, 5.2], [-6.4, 4.4]])]);
+    // Two clients walk next to the same crate and request pickup at the same instant.
+    const target = [...a.state.boxes.values()].find((bx: any) => Math.abs(bx.x - 8.3) < 0.01) as any;
+    await Promise.all([
+      walk(a, [[4, 5.5], [4, 0], [8.3, 0], [8.1, -2.9]]),
+      walk(b, [[-3.5, 4.5], [4, 4.5], [4, 0], [8.3, 0], [8.7, -2.9]]),
+    ]);
     await sleep(150);
     a.send(MSG.pickup, { boxId: target.id });
     b.send(MSG.pickup, { boxId: target.id });
     await waitFor(() => c.state.boxes.get(target.id)?.state === "held");
-    await sleep(200);
+    await sleep(250);
     const holder = c.state.boxes.get(target.id).heldBy;
     expect([a.sessionId, b.sessionId]).toContain(holder);
-    const holders = [...c.state.players.values()].filter((p: any) => p.heldBoxId === target.id);
-    expect(holders).toHaveLength(1);
-
-    // The winner carries it to the order zone; delivery counts exactly once on every client.
+    expect([...c.state.players.values()].filter((p: any) => p.heldBoxId === target.id)).toHaveLength(1);
     const winner = holder === a.sessionId ? a : b;
-    await walk(winner, [[-6.5, 5], [4, 5], [4, 0], [8, 0], [8, -5]]);
-    await sleep(150);
-    winner.send(MSG.put, { drop: false });
-    winner.send(MSG.put, { drop: false }); // repeated trigger must not double-count
-    await waitFor(() => a.state.delivered === 1 && c.state.delivered === 1);
-    await sleep(300);
-    expect(c.state.delivered).toBe(1);
+    const loser = winner === a ? b : a;
 
-    // Capacity: five players fit, a sixth is refused.
+    // Hold-to-unpack at the rack: releasing early cancels, a full hold adds the crate's units.
+    await walk(winner, [[9.5, -3], [9.5, -6]]);
+    await sleep(200);
+    winner.send(MSG.hold, { on: true });
+    await waitFor(() => c.state.players.get(winner.sessionId).action === "unpack");
+    await sleep(900);
+    winner.send(MSG.hold, { on: false });
+    await sleep(300);
+    expect(c.state.players.get(winner.sessionId).action).toBe("");
+    expect(c.state.fixtures.get("rackA").stock).toBe(24);
+    await sleep(150);
+    winner.send(MSG.hold, { on: true });
+    await waitFor(() => c.state.fixtures.get("rackA").stock === 36, 6000);
+    expect(c.state.players.get(winner.sessionId).heldBoxId).toBe("");
+
+    // rack -> tray -> shelf
+    await sleep(200);
+    winner.send(MSG.hold, { on: true });
+    await waitFor(() => !!c.state.players.get(winner.sessionId).heldBoxId, 5000);
+    expect(c.state.fixtures.get("rackA").stock).toBe(30);
+    await walk(winner, [[10, -3], [10, 4], [7, 3.9]]);
+    await sleep(200);
+    winner.send(MSG.hold, { on: true });
+    await waitFor(() => c.state.fixtures.get("shelfB").stock === 6, 9000);
+
+    // Open the store early at the door; a customer shows up on every client.
+    await walk(loser, [[loser.state.players.get(loser.sessionId).x, 6.9], [-1.5, 6.9]]).catch(() => {});
+    await sleep(200);
+    loser.send(MSG.hold, { on: true });
+    await waitFor(() => c.state.phase === "open", 5000);
+    await waitFor(() => c.state.customers.size > 0, 15_000);
+    expect(a.state.customers.size).toBeGreaterThan(0);
+
+    // Upgrades are validated server-side and visible to everyone.
+    const money = c.state.money;
+    c.send(MSG.upgrade, { id: "hands" });
+    await waitFor(() => a.state.hands === 1);
+    expect(c.state.money).toBe(money - 80);
+    c.send(MSG.upgrade, { id: "bogus" });
+    await sleep(300);
+    expect(c.state.money).toBe(money - 80);
+
+    // Capacity: five players fit, a sixth gets a fresh room.
     const extra = [await join("D"), await join("E")];
     expect(extra).toHaveLength(2);
     await waitFor(() => a.state.players.size === MAX_PLAYERS);
-    const overflow = await join("F"); // joinOrCreate opens a fresh room when the first is full
+    const overflow = await join("F");
     expect(overflow.roomId).not.toBe(a.roomId);
 
-    // Disconnecting a carrier releases the box.
-    const loser = winner === a ? b : a;
-    const box2 = [...c.state.boxes.values()].find((bx: any) => bx.state === "available" && bx.x === -9.5 && bx.z === 3.5) as any;
-    await walk(loser, [[-6.5, 5], [-9.5, 5], [-9.5, 4.3]]);
-    await sleep(150);
-    loser.send(MSG.pickup, { boxId: box2.id });
-    await waitFor(() => c.state.boxes.get(box2.id)?.heldBy === loser.sessionId);
-    await loser.leave();
-    await waitFor(() => c.state.boxes.get(box2.id)?.state === "available");
-    expect(c.state.boxes.get(box2.id).heldBy).toBe("");
-  }, 40_000);
+    // Disconnecting a carrier releases the crate.
+    const crate2 = [...c.state.boxes.values()].find((bx: any) => bx.type === "crate" && bx.state === "available") as any;
+    await walk(c, [[crate2.x + 0.5, 0], [crate2.x + 0.2, crate2.z + 0.9]]);
+    await sleep(200);
+    c.send(MSG.pickup, { boxId: crate2.id });
+    await waitFor(() => a.state.boxes.get(crate2.id)?.heldBy === c.sessionId);
+    await c.leave();
+    await waitFor(() => a.state.boxes.get(crate2.id)?.state === "available");
+    expect(a.state.boxes.get(crate2.id).heldBy).toBe("");
+  }, 120_000);
 
   it("ignores teleporting movement", async () => {
     const d = await join("Tele");
@@ -112,4 +149,21 @@ describe("multiplayer room", () => {
     await sleep(250);
     expect(d.state.players.get(d.sessionId).x).toBeCloseTo(before, 1);
   });
+
+  it("workers collide: walking into someone nudges them instead of passing through", async () => {
+    const a = await join("Pusher");
+    const b = await join("Bystander");
+    await waitFor(() => !!b.state?.players?.get(b.sessionId) && b.state.players.size >= 2);
+    const bx0 = b.state.players.get(b.sessionId).x;
+    const bz = b.state.players.get(b.sessionId).z;
+    const me = a.state.players.get(a.sessionId);
+    // walk from the left spawn straight into the other worker's spot
+    await walk(a, [[me.x, bz], [bx0 + 0.3, bz]]);
+    await sleep(400);
+    const pa = b.state.players.get(a.sessionId);
+    const pb = b.state.players.get(b.sessionId);
+    expect(Math.hypot(pa.x - pb.x, pa.z - pb.z)).toBeGreaterThanOrEqual(0.85);
+    expect(pb.x).toBeGreaterThan(bx0 + 0.05); // the bystander was shoved along
+  });
 });
+
